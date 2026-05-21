@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>應徵者面試預約 — Interview Platform</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght=400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+
+<nav>
+  <div class="nav-logo">INTERVIEW <span>PLATFORM</span></div>
+  <div class="nav-links">
+    <a href="/" class="active">應徵者預約</a>
+    <a href="/hr/login">HR 後台</a>
+  </div>
+</nav>
+
+<div class="page" style="max-width:630px">
+  <div class="page-header">
+    <h1>面試時段預約</h1>
+  </div>
+
+  <div class="steps" id="steps">
+    <div class="step active" id="step-1">① 選擇職缺</div>
+    <div class="step" id="step-2">② 選擇時段</div>
+    <div class="step" id="step-3">③ 填寫資料</div>
+    <div class="step" id="step-4">④ 確認完成</div>
+  </div>
+
+  <div id="panel-1" class="card">
+    <div class="card-title">請選擇應徵職缺</div>
+    <div class="form-group">
+      <select id="position-select">
+        <option value="">— 請選擇 —</option>
+      </select>
+    </div>
+    <button class="btn btn-primary" id="step1-next" disabled>下一步 →</button>
+  </div>
+
+  <div id="panel-2" class="card" style="display:none">
+    <div class="card-title">請選擇面試時段</div>
+    <div id="slots-container" class="slot-list"></div>
+    <div style="margin-top:16px">
+      <button class="btn btn-ghost btn-sm" onclick="goStep(1)">← 上一步</button>
+    </div>
+  </div>
+
+  <div id="panel-3" class="card" style="display:none">
+    <div class="card-title" id="panel-3-title">填寫應徵者資料</div>
+
+    <div id="selected-slot-info" style="background:var(--bg2);border-radius:var(--radius);padding:12px 14px;margin-bottom:20px;font-size:13px;color:var(--text2)"></div>
+
+    <div id="book-error" class="alert alert-error" style="display:none"></div>
+    <div id="existing-booking-info" class="alert alert-info" style="display:none;margin-top:12px"></div>
+
+    <div id="reselect-inline-container" style="display:none; background: var(--bg2); padding: 16px; border-radius: var(--radius); margin-bottom: 20px;">
+      <div class="form-group">
+        <label>重新選擇應徵職缺</label>
+        <select id="inline-position-select">
+          <option value="">— 請選擇 —</option>
+        </select>
+      </div>
+      <div class="form-group" id="inline-slots-group">
+        <label>重新選擇面試時段</label>
+        <select id="inline-slot-select">
+          <option value="">— 請先選擇上方職缺 —</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>姓名 *</label>
+      <input type="text" id="applicant-name" placeholder="您的姓名" required>
+    </div>
+    <div class="form-group">
+      <label>Email *</label>
+      <input type="email" id="applicant-email" placeholder="your@email.com" required>
+    </div>
+    <div class="form-group">
+      <label>電話 *</label>
+      <input type="tel" id="applicant-phone" placeholder="0912-345-678" required>
+    </div>
+
+    <div style="display:flex;gap:10px;margin-top:4px;flex-wrap:wrap">
+      <button class="btn btn-ghost" id="step3-back-btn" onclick="goStep(2)">← 上一步</button>
+      <button class="btn btn-primary" id="submit-btn" onclick="submitBooking()">確認預約</button>
+      <button class="btn" id="confirm-modify-btn" style="display:none; background-color: #b88400; color: #ffffff; border: none;">確認修改原預約</button>
+    </div>
+  </div>
+
+  <div id="panel-4" class="card" style="display:none;text-align:center;padding:48px 32px">
+    <div style="font-size:40px;margin-bottom:16px">✅</div>
+    <h2 style="font-size:20px;font-weight:500;margin-bottom:8px">預約成功！</h2>
+    <p style="color:var(--text2);font-size:14px;margin-bottom:24px">
+      確認信已寄送至您的 Email，信中含有「取消預約」按鈕，<br>如需取消請點擊信中連結。
+    </p>
+    <div id="success-detail" style="background:var(--bg2);border-radius:var(--radius);padding:14px 20px;display:inline-block;text-align:left;font-size:13px;margin-bottom:24px"></div>
+    <br>
+    
+    <div style="display:flex; gap:10px; justify-content:center;">
+      <button class="btn btn-primary" style="background-color: #f3c654;" onclick="switchToModifyMode()">修改預約</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+let selectedPositionId = null;
+let selectedPositionTitle = '';
+let selectedSlot = null;
+let duplicateBookingContext = null;
+let duplicateBookingInfo = null;
+let modifyBookingContext = null;
+let allPositions = [];
+
+const toast = (msg, type='success') => {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = `show ${type}`;
+  setTimeout(() => el.className = '', 2800);
+};
+
+function goStep(n) {
+  [1,2,3,4].forEach(i => {
+    document.getElementById(`panel-${i}`).style.display = i===n ? 'block' : 'none';
+    const stepEl = document.getElementById(`step-${i}`);
+    stepEl.className = 'step' + (i===n ? ' active' : i<n ? ' done' : '');
+  });
+}
+
+// 載入職缺並初始化下拉選單
+(async () => {
+  try {
+    const res = await fetch('/api/positions?active_only=true');
+    allPositions = await res.json();
+    
+    const sel = document.getElementById('position-select');
+    const inlineSel = document.getElementById('inline-position-select');
+    
+    allPositions.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = p.title;
+      sel.appendChild(opt);
+      
+      const optInline = opt.cloneNode(true);
+      inlineSel.appendChild(optInline);
+    });
+  } catch(e) {
+    console.error("無法載入職缺列表", e);
+  }
+})();
+
+// 主畫面職缺選擇變更
+document.getElementById('position-select').addEventListener('change', function() {
+  const btn = document.getElementById('step1-next');
+  btn.disabled = !this.value;
+  selectedPositionId = this.value;
+  selectedPositionTitle = this.options[this.selectedIndex]?.text || '';
+});
+
+// 核心更新：加載指定職缺的面試時段至內嵌選單
+async function fetchAndPopulateInlineSlots() {
+  const inlineSlotSelect = document.getElementById('inline-slot-select');
+  
+  if (!selectedPositionId) {
+    inlineSlotSelect.innerHTML = '<option value="">— 請先選擇上方職缺 —</option>';
+    return;
+  }
+  
+  inlineSlotSelect.innerHTML = '<option value="">載入中…</option>';
+  
+  try {
+    const res = await fetch(`/api/slots?open_only=true`);
+    const slots = await res.json();
+    
+    inlineSlotSelect.innerHTML = '<option value="">— 請選擇時段 —</option>';
+    if (!slots.length) {
+      inlineSlotSelect.innerHTML = '<option value="">目前無可用時段</option>';
+      return;
+    }
+    
+    slots.forEach(s => {
+      const startTime = s.start_time.slice(0, 5);
+      const endTime = s.end_time.slice(0, 5);
+      const opt = document.createElement('option');
+      opt.value = s.id;
+      opt.dataset.date = s.slot_date;
+      opt.dataset.start = startTime;
+      opt.dataset.end = endTime;
+      opt.textContent = `${s.slot_date} (${startTime} – ${endTime}) — 剩餘 ${s.max_capacity - s.booked_count} 名額`;
+      inlineSlotSelect.appendChild(opt);
+    });
+  } catch (err) {
+    console.error("載入時段失敗:", err);
+    inlineSlotSelect.innerHTML = '<option value="">載入時段失敗</option>';
+  }
+}
+
+// Panel-3 內嵌職缺選擇變更邏輯
+document.getElementById('inline-position-select').addEventListener('change', async function() {
+  if (!this.value) {
+    selectedPositionId = null;
+    selectedPositionTitle = '';
+    document.getElementById('inline-slot-select').innerHTML = '<option value="">— 請先選擇上方職缺 —</option>';
+    return;
+  }
+  
+  selectedPositionId = this.value;
+  selectedPositionTitle = this.options[this.selectedIndex]?.text || '';
+  
+  // 觸發重新加載時段
+  await fetchAndPopulateInlineSlots();
+});
+
+// Panel-3 內嵌時段選擇變更
+document.getElementById('inline-slot-select').addEventListener('change', function() {
+  const opt = this.options[this.selectedIndex];
+  if (!this.value) return;
+  
+  selectedSlot = {
+    id: this.value,
+    date: opt.dataset.date,
+    start: opt.dataset.start,
+    end: opt.dataset.end
+  };
+  
+  document.getElementById('selected-slot-info').innerHTML = `
+    <strong>應徵職缺：</strong>${selectedPositionTitle}&emsp;
+    <strong>日期：</strong>${selectedSlot.date}&emsp;
+    <strong>時間：</strong>${selectedSlot.start} – ${selectedSlot.end}
+  `;
+});
+
+document.getElementById('step1-next').addEventListener('click', () => {
+  if (!selectedPositionId) return;
+  loadSlots();
+  goStep(2);
+});
+
+async function loadSlots() {
+  const container = document.getElementById('slots-container');
+  container.innerHTML = '<div class="empty">載入中…</div>';
+  const res = await fetch(`/api/slots?open_only=true`);
+  const slots = await res.json();
+  if (!slots.length) {
+    container.innerHTML = '<div class="empty">目前無可用時段，請稍後再試</div>';
+    return;
+  }
+  container.innerHTML = slots.map(s => {
+    const startTime = s.start_time.slice(0, 5);
+    const endTime = s.end_time.slice(0, 5);
+    
+    return `
+      <div class="slot-item" style="cursor:pointer" onclick="selectSlot('${s.id}','${s.slot_date}','${startTime}','${endTime}','${s.max_capacity - s.booked_count}')" id="slot-${s.id}">
+        <div style="flex:1">
+          <div class="slot-date">${s.slot_date}</div>
+          <div class="slot-time">${startTime} – ${endTime}</div>
+          <div class="slot-meta">剩餘 ${s.max_capacity - s.booked_count} 個名額</div>
+        </div>
+        <div style="color:var(--accent);font-size:13px">選擇 →</div>
+      </div>
+    `;
+  }).join('');
+}
+
+function selectSlot(id, date, start, end, remain) {
+  selectedSlot = { id, date, start, end, remain };
+  document.getElementById('selected-slot-info').innerHTML = `
+    <strong>應徵職缺：</strong>${selectedPositionTitle}&emsp;
+    <strong>日期：</strong>${date}&emsp;
+    <strong>時間：</strong>${start} – ${end}
+  `;
+  document.getElementById('reselect-inline-container').style.display = 'none';
+  document.getElementById('panel-3-title').textContent = '填寫應徵者資料';
+  document.getElementById('step3-back-btn').style.display = 'inline-flex';
+  goStep(3);
+}
+
+// 提交預約主函數（重複預約防禦與 UUID 精密解析版）
+async function submitBooking() {
+  const btn = document.getElementById('submit-btn');
+  const errEl = document.getElementById('book-error');
+  const existingBookingEl = document.getElementById('existing-booking-info');
+  const modifyBtn = document.getElementById('confirm-modify-btn');
+  const step3BackBtn = document.getElementById('step3-back-btn');
+  const inlineContainer = document.getElementById('reselect-inline-container');
+  
+  errEl.style.display = 'none';
+  existingBookingEl.style.display = 'none';
+  modifyBtn.style.display = 'none';
+  
+  const name  = document.getElementById('applicant-name').value.trim();
+  const email = document.getElementById('applicant-email').value.trim();
+  const phone = document.getElementById('applicant-phone').value.trim();
+  
+  if (!name || !email || !phone) {
+    errEl.textContent = '請填寫所有必填欄位';
+    errEl.style.display = 'block';
+    return;
+  }
+
+  if (!/^09\d{8}$/.test(phone)) {
+      errEl.textContent = '請輸入正確的 10 碼手機號碼 (例如: 0912345678)';
+      errEl.style.display = 'block';
+      return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = '送出中…';
+  
+  try {
+    const res = await fetch('/api/book', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        slot_id: String(selectedSlot.id),
+        position_id: String(selectedPositionId),
+        name, email, phone
+      })
+    });
+
+    let responseData = null;
+    try {
+      responseData = await res.json();
+    } catch(e) {
+      console.error("無法解讀後端 JSON 格式", e);
+    }
+
+    console.log("後端原始回傳數據：", responseData);
+
+    // 當 HTTP 狀態不為 200 (表示有異常或重複預約)
+    if (!res.ok) {
+      const detailObj = responseData?.detail;
+      const isDuplicate = (detailObj?.code === 'duplicate_confirmed_booking' || 
+                           (typeof detailObj === 'string' && (detailObj.includes('已預約過') || detailObj.includes('已確認'))));
+      const isRecentCompleted = detailObj?.code === 'recent_auto_completed_booking';
+
+      if (isRecentCompleted) {
+        const msg = detailObj?.message || '您最近完成過預約，請稍後再預約。';
+        errEl.textContent = msg;
+        errEl.style.display = 'block';
+        btn.style.display = 'inline-flex';
+        step3BackBtn.style.display = 'inline-flex';
+        if (typeof existingBookingEl !== 'undefined' && existingBookingEl) {
+          existingBookingEl.style.display = 'none';
+        }
+        return;
+      }
+
+      // 重複預約防禦與 UUID 提取機制
+      if (isDuplicate) {
+        const foundBookingId = detailObj?.booking_id || responseData?.booking_id || detailObj?.id || responseData?.id;
+        
+        if (!foundBookingId) {
+          throw new Error('偵測到重複預約，但系統獲取的紀錄 ID 異常，請重整網頁或重新輸入正確資料。');
+        }
+
+        // 正確保存全域變數上下文（維持 UUID 的原始字串格式，不可轉為整數）
+        modifyBookingContext = { email, bookingId: String(foundBookingId) };
+        duplicateBookingContext = { email };
+        duplicateBookingInfo = typeof detailObj === 'object' ? detailObj : {};
+
+        // 介面切換至修改預約模式
+        document.getElementById('panel-3-title').textContent = '修改應徵預約紀錄';
+        
+        // 💡 同步展現雙下拉選單容器
+        inlineContainer.style.display = 'block';
+        document.getElementById('inline-position-select').value = selectedPositionId || "";
+        
+        // 同步為底下的時段下拉選單加載並渲染當前職缺可預約的數據
+        await fetchAndPopulateInlineSlots();
+        
+        modifyBtn.style.display = 'inline-flex';
+        btn.style.display = 'none'; 
+        step3BackBtn.style.display = 'none'; 
+
+        errEl.textContent = '您已有預約紀錄。可直接在下方選單「重新選擇職缺與面試時段」並微調修改姓名、電話，然後點擊「確認修改原預約」。';
+        errEl.style.display = 'block';
+
+        // 渲染既有預約資訊看板
+        const displayTitle = duplicateBookingInfo.position_title || selectedPositionTitle;
+        const displayDate = duplicateBookingInfo.slot_date || selectedSlot?.date;
+        const displayStartTime = duplicateBookingInfo.start_time ? duplicateBookingInfo.start_time.slice(0, 5) : (selectedSlot?.start || '');
+        const displayEndTime = duplicateBookingInfo.end_time ? duplicateBookingInfo.end_time.slice(0, 5) : (selectedSlot?.end || '');
+
+        existingBookingEl.innerHTML = `
+          <div style="font-weight:600;margin-bottom:8px">您目前的既有預約：</div>
+          <div style="margin:6px 0">職缺：${displayTitle}</div>
+          <div style="margin:6px 0">日期：${displayDate}</div>
+          <div style="margin:6px 0">時間：${displayStartTime} – ${displayEndTime}</div>
+        `;
+        existingBookingEl.style.display = 'block';
+        return; 
+      }
+
+      // 其他一般性錯誤處理
+      const msg = typeof detailObj === 'string' ? detailObj : (detailObj?.message || '預約失敗');
+      throw new Error(msg);
+    }
+    
+    // 正常初次預約成功
+    const bId = responseData?.detail?.booking_id || responseData?.booking_id;
+    modifyBookingContext = { email, bookingId: bId };
+    showSuccessPage(email);
+
+  } catch(err) {
+    console.error("預約流程捕獲到異常:", err);
+    errEl.textContent = err.message;
+    errEl.style.display = 'block';
+    btn.style.display = 'inline-flex';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '確認預約';
+  }
+}
+
+function showSuccessPage(email) {
+  document.getElementById('success-detail').innerHTML = `
+    <div style="margin-bottom:6px"><strong>職缺：</strong>${selectedPositionTitle}</div>
+    <div style="margin-bottom:6px"><strong>日期：</strong>${selectedSlot.date}</div>
+    <div style="margin-bottom:6px"><strong>時間：</strong>${selectedSlot.start} – ${selectedSlot.end}</div>
+    <div><strong>Email：</strong>${email}</div>
+  `;
+  goStep(4);
+}
+
+async function switchToModifyMode() {
+  const emailInput = document.getElementById('applicant-email').value.trim();
+  const emailToCheck = modifyBookingContext?.email || duplicateBookingContext?.email || emailInput;
+
+  if (!modifyBookingContext?.bookingId && emailToCheck) {
+    try {
+      const res = await fetch(`/api/bookings/by-email?email=${encodeURIComponent(emailToCheck)}`);
+      if (res.ok) {
+        const d = await res.json();
+        modifyBookingContext = modifyBookingContext || { email: emailToCheck };
+        modifyBookingContext.bookingId = d.booking_id;
+      }
+    } catch (e) {
+      console.warn('無法以 email 取得 booking id', e);
+    }
+  }
+
+  goStep(3);
+  document.getElementById('panel-3-title').textContent = '修改應徵預約紀錄';
+  
+  // 💡 同步展現雙下拉選單容器並自動渲染
+  document.getElementById('reselect-inline-container').style.display = 'block';
+  document.getElementById('inline-position-select').value = selectedPositionId || "";
+  await fetchAndPopulateInlineSlots();
+  
+  document.getElementById('submit-btn').style.display = 'none';
+  document.getElementById('step3-back-btn').style.display = 'none';
+  document.getElementById('confirm-modify-btn').style.display = 'inline-flex';
+}
+
+// 點擊修改發送：維持 String(UUID) 字串格式，完美符合 FastAPI 的 Pydantic 的結構
+document.getElementById('confirm-modify-btn').addEventListener('click', async () => {
+  const errEl = document.getElementById('book-error');
+  const btn = document.getElementById('confirm-modify-btn');
+
+  const targetBookingId = modifyBookingContext?.bookingId || duplicateBookingInfo?.booking_id;
+  
+  if (!targetBookingId) {
+    errEl.textContent = '找不到原預約紀錄的 ID，請重新填寫表單或再次送出。';
+    errEl.style.display = 'block';
+    return;
+  }
+  
+  if (!selectedSlot?.id || !selectedPositionId) {
+    errEl.textContent = '請確定您已選擇修改後的職缺與時段。';
+    errEl.style.display = 'block';
+    return;
+  }
+
+  errEl.style.display = 'none';
+  btn.disabled = true;
+  btn.textContent = '修改中…';
+
+  try {
+    const name = document.getElementById('applicant-name').value.trim();
+    const email = document.getElementById('applicant-email').value.trim();
+    const phone = document.getElementById('applicant-phone').value.trim();
+
+    const requestBody = {
+      booking_id: String(targetBookingId),
+      slot_id: String(selectedSlot.id),
+      position_id: String(selectedPositionId),
+      name: name,
+      email: email,
+      phone: phone
+    };
+
+    console.log("送出修改的 JSON 數據：", requestBody);
+
+    const res = await fetch('/api/bookings/modify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody)
+    });
+    
+    const data = await res.json();
+    if (!res.ok) {
+      const detailMsg = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail);
+      throw new Error(detailMsg || '修改失敗');
+    }
+
+    toast('預約修改成功！');
+    showSuccessPage(email);
+    document.getElementById('success-detail').innerHTML += `<div style="margin-top:10px;color:#331A00;font-weight:bold;"> 已成功修改原預約內容</div>`;
+  } catch (err) {
+    console.error("修改預約發生異常:", err);
+    errEl.textContent = `修改失敗: ${err.message}`;
+    errEl.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '確認修改原預約';
+  }
+});
+
+function resetToInitialForm() {
+  document.getElementById('confirm-modify-btn').style.display = 'none';
+  document.getElementById('existing-booking-info').style.display = 'none';
+  document.getElementById('reselect-inline-container').style.display = 'none';
+  document.getElementById('book-error').style.display = 'none';
+  
+  document.getElementById('submit-btn').style.display = 'inline-flex';
+  document.getElementById('step3-back-btn').style.display = 'inline-flex';
+  document.getElementById('panel-3-title').textContent = '填寫應徵者資料';
+
+  selectedPositionId = null;
+  selectedPositionTitle = '';
+  selectedSlot = null;
+  duplicateBookingContext = null;
+  duplicateBookingInfo = null;
+  modifyBookingContext = null;
+
+  document.getElementById('position-select').value = '';
+  document.getElementById('inline-position-select').value = '';
+  document.getElementById('inline-slot-select').innerHTML = '<option value="">— 請先選擇上方職缺 —</option>';
+  document.getElementById('step1-next').disabled = true;
+  
+  ['applicant-name','applicant-email','applicant-phone'].forEach(id => document.getElementById(id).value = '');
+  goStep(1);
+}
+</script>
+</body>
+</html>

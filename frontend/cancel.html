@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>取消預約 — Interview Platform</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+
+<nav>
+  <div class="nav-logo">INTERVIEW <span>PLATFORM</span></div>
+  <div class="nav-links">
+    <a href="/">應徵者預約</a>
+    <a href="/hr/login">HR 後台</a>
+  </div>
+</nav>
+
+<div class="page" style="max-width:480px">
+  <div class="card" style="text-align:center;padding:48px 32px;margin-top:20px">
+
+    <div id="loading">
+      <div style="font-size:32px;margin-bottom:16px">⏳</div>
+      <p style="color:var(--text2)">驗證連結中…</p>
+    </div>
+
+    <div id="confirm-panel" style="display:none">
+      <div style="font-size:40px;margin-bottom:16px">⚠️</div>
+      <h2 style="font-size:18px;font-weight:500;margin-bottom:12px">確認取消面試預約？</h2>
+      <p style="color:var(--text2);font-size:14px;margin-bottom:28px">
+        點擊下方按鈕後，您的面試預約將被取消，<br>此操作無法復原。
+      </p>
+      <button class="btn btn-danger" id="cancel-btn" style="width:100%;justify-content:center">
+        確認取消預約
+      </button>
+      <br>
+      <a href="/" style="display:inline-block;margin-top:14px;font-size:13px;color:var(--text3)">
+        ← 不取消，返回首頁
+      </a>
+    </div>
+
+    <div id="success-panel" style="display:none">
+      <div style="font-size:40px;margin-bottom:16px">✅</div>
+      <h2 style="font-size:18px;font-weight:500;margin-bottom:12px">預約已取消</h2>
+      <p style="color:var(--text2);font-size:14px;margin-bottom:24px">
+        您的面試預約已成功取消，取消通知已寄送至您的 Email。
+      </p>
+      <a href="/" class="btn btn-primary" style="text-decoration:none;justify-content:center">
+        重新預約
+      </a>
+    </div>
+
+    <div id="error-panel" style="display:none">
+      <div style="font-size:40px;margin-bottom:16px">❌</div>
+      <h2 style="font-size:18px;font-weight:500;margin-bottom:12px">連結無效</h2>
+      <p id="error-msg" style="color:var(--text2);font-size:14px;margin-bottom:24px"></p>
+      <a href="/" class="btn btn-ghost" style="text-decoration:none">← 返回首頁</a>
+    </div>
+
+  </div>
+</div>
+
+<script>
+const token = new URLSearchParams(location.search).get('t') || '';
+const cancelFormUrl = '{{ cancel_form_url | default('') }}';
+
+window.addEventListener('DOMContentLoaded', () => {
+  if (!token) {
+    showError('無效的取消連結，請確認 Email 中的連結是否完整。');
+    return;
+  }
+  if (cancelFormUrl) {
+    window.location.href = cancelFormUrl;
+    return;
+  }
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('confirm-panel').style.display = 'block';
+});
+
+document.getElementById('cancel-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('cancel-btn');
+  btn.disabled = true;
+  btn.textContent = '處理中…';
+  try {
+    const res = await fetch('/api/cancel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || '取消失敗');
+    document.getElementById('confirm-panel').style.display = 'none';
+    document.getElementById('success-panel').style.display = 'block';
+    if (data.status === 'cancelled') {
+      document.getElementById('success-panel').insertAdjacentHTML('beforeend', '<p style="color:#28a745;font-size:14px;margin-top:8px;">目前狀態：cancelled</p>');
+    }
+  } catch (err) {
+    showError(err.message || '取消失敗');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '確認取消預約';
+  }
+});
+
+function showError(msg) {
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('confirm-panel').style.display = 'none';
+  document.getElementById('error-panel').style.display = 'block';
+  document.getElementById('error-msg').textContent = msg;
+}
+</script>
+</body>
+</html>

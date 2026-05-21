@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HR 後台登入 — Interview Platform</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/style.css" />
+
+  <style>
+    :root {
+      /* 品牌色：使用您提供的金褐色 #C5A25D */
+      --primary: #C5A25D;
+      --primary-hover: #b08e4d;
+      
+      --border: #e2e8f0;
+      --bg: #f8fafc;
+      --text1: #1e293b;
+      --text2: #64748b;
+      --danger: #ef4444;
+      --radius: 12px;
+      --card-shadow: 0 10px 25px rgba(0,0,0,.05);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: "Noto Sans TC", sans-serif;
+      background: var(--bg);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .login-wrap {
+      width: 100%;
+      padding: 24px;
+    }
+
+    .login-card {
+      width: 100%;
+      max-width: 400px;
+      background: white;
+      margin: auto;
+      border-radius: 16px;
+      padding: 48px 40px;
+      box-shadow: var(--card-shadow);
+    }
+
+    .login-logo {
+      text-align: center;
+      font-size: 24px;
+      font-weight: 700;
+      color: var(--text1);
+      letter-spacing: 0.5px;
+    }
+
+    .login-logo span {
+      color: var(--primary);
+    }
+
+    .login-subtitle {
+      text-align: center;
+      margin-top: 8px;
+      margin-bottom: 32px;
+      color: var(--text2);
+      font-size: 14px;
+    }
+
+    .form-group {
+      margin-bottom: 20px;
+    }
+
+    .form-group label {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text1);
+    }
+
+    .form-group input {
+      width: 100%;
+      padding: 12px 16px;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      font-size: 15px;
+      outline: none;
+      transition: all .2s;
+    }
+
+    .form-group input:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(197, 162, 93, 0.1);
+    }
+
+    .btn {
+      width: 100%;
+      border: none;
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all .2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+
+    .btn-primary {
+      background: var(--primary);
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background: var(--primary-hover);
+      transform: translateY(-1px);
+    }
+
+    .btn:disabled {
+      opacity: .7;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .alert {
+      margin-bottom: 24px;
+      padding: 12px 14px;
+      border-radius: 8px;
+      font-size: 14px;
+    }
+
+    .alert-error {
+      background: #fef2f2;
+      color: var(--danger);
+      border: 1px solid #fee2e2;
+    }
+
+    .footer-tip {
+      margin-top: 32px;
+      text-align: center;
+      font-size: 12px;
+      color: var(--text2);
+      line-height: 1.6;
+      background: #f1f5f9;
+      padding: 12px;
+      border-radius: 8px;
+    }
+
+    .loading-spinner {
+      width: 18px;
+      height: 18px;
+      border: 2px solid rgba(255,255,255,.3);
+      border-top-color: white;
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+
+<body>
+
+<div class="login-wrap">
+  <div class="login-card">
+    <div class="login-logo">
+      INTERVIEW <span>PLATFORM</span>
+    </div>
+
+    <div class="login-subtitle">HR 後台管理系統</div>
+
+    <div id="error-msg" class="alert alert-error" style="display:none"></div>
+
+    <form id="login-form">
+      <div class="form-group">
+        <label>管理員 Email</label>
+        <input type="email" id="email" placeholder="hr@example.com" required autocomplete="email" />
+      </div>
+
+      <div class="form-group">
+        <label>密碼</label>
+        <input type="password" id="password" placeholder="••••••••" required autocomplete="current-password" />
+      </div>
+
+      <button type="submit" class="btn btn-primary" id="login-btn" style="margin-top:12px">
+        登入系統
+      </button>
+    </form>
+
+    <div class="footer-tip">
+      <strong>測試帳號資訊</strong><br>
+      帳號：admin@example.com<br>
+      密碼：Admin1234
+    </div>
+  </div>
+</div>
+
+<script>
+const loginForm = document.getElementById('login-form');
+const loginBtn = document.getElementById('login-btn');
+const errorEl = document.getElementById('error-msg');
+
+loginForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    errorEl.style.display = 'none';
+
+    // 開始加載狀態
+    loginBtn.disabled = true;
+    loginBtn.innerHTML = `<span class="loading-spinner"></span> 登入中...`;
+
+    try {
+        const form = new FormData();
+        form.append('email', document.getElementById('email').value.trim());
+        form.append('password', document.getElementById('password').value);
+
+        const res = await fetch('/api/hr/login', {
+            method: 'POST',
+            body: form,
+            credentials: 'include'
+        });
+
+        // 檢查回應格式
+        const contentType = res.headers.get('content-type');
+        if (!contentType || !contentType.includes('application/json')) {
+            throw new Error(`伺服器錯誤 (${res.status})`);
+        }
+
+        const data = await res.json();
+
+        // 處理 API 錯誤
+        if (!res.ok) {
+            throw new Error(data.detail || data.message || '登入失敗');
+        }
+
+        // 登入成功
+        if (data.ok) {
+            window.location.href = '/hr';
+            return;
+        }
+        throw new Error('登入失敗');
+
+    } catch (err) {
+        console.error(err);
+        errorEl.textContent = err.message || '登入失敗';
+        errorEl.style.display = 'block';
+        
+        // 恢復按鈕狀態
+        loginBtn.disabled = false;
+        loginBtn.innerHTML = '登入系統';
+    }
+});
+</script>
+
+</body>
+</html>

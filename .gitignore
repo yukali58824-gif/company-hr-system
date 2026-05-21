@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# virtualenv
+.venv/
+venv/
+
+# env files
+.env
+
+# Google Meet tokens / credentials
+google_meet/token.json
+google_meet/credentials.json
+
+# VS Code
+.vscode/
+
+# system
+.DS_Store
+Thumbs.db
