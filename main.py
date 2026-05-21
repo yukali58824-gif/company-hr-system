@@ -1533,6 +1533,72 @@ async def modify_booking(payload: BookingModify):
                     booking_uuid
                 )
 
+                # 如果時段有變動，重新產生取消 token、寄送變動確認信，並重新排程 Google Meet
+                if booking["slot_id"] != slot_uuid:
+                    try:
+                        cancel_token, cancel_expires = generate_cancel_token()
+
+                        await conn.execute(
+                            """
+                            UPDATE email_logs
+                            SET cancel_token = NULL,
+                                cancel_token_expires_at = NULL,
+                                updated_at = NOW()
+                            WHERE booking_id = $1
+                              AND email_type = 'booking_confirm'
+                            """,
+                            booking_uuid,
+                        )
+
+                        await conn.execute(
+                            """
+                            INSERT INTO email_logs
+                            (booking_id, recipient_email, email_type, status,
+                             cancel_token, cancel_token_expires_at)
+                            VALUES ($1, $2, 'booking_confirm', 'pending', $3, $4)
+                            """,
+                            booking_uuid,
+                            payload.email,
+                            cancel_token,
+                            cancel_expires,
+                        )
+
+                        try:
+                            subject, html = build_confirmation_email(
+                                applicant_name=payload.name,
+                                position_title=position["title"],
+                                slot_date=slot["slot_date"],
+                                start_time=slot["start_time"],
+                                end_time=slot["end_time"],
+                                cancel_token=cancel_token,
+                                subject_prefix="面試時間異動確認",
+                            )
+                            await _send(to=payload.email, subject=subject, html=html)
+                            await conn.execute(
+                                """
+                                UPDATE email_logs
+                                SET status='sent',
+                                    sent_at=NOW(),
+                                    updated_at=NOW()
+                                WHERE booking_id=$1 AND email_type='booking_confirm'
+                                  AND cancel_token=$2
+                                """,
+                                booking_uuid,
+                                cancel_token,
+                            )
+                        except Exception:
+                            logger.exception(f"Failed to send reschedule email for booking {booking_uuid}")
+
+                        try:
+                            asyncio.create_task(
+                                schedule_google_meet_for_booking(str(booking_uuid), delay_seconds=10)
+                            )
+                        except Exception:
+                            logger.exception(f"Failed to reschedule google meet for booking {booking_uuid}")
+
+                    except Exception:
+                        logger.exception(f"Failed to create email log for modified booking {booking_uuid}")
+
         return {"ok": True}
 
     except HTTPException:
