@@ -10,3 +10,29 @@ uvicorn main:app --reload
 
 hr_login.html
 auth.py 
+
+git config --global user.name "你的名稱"
+git config --global user.email "你的@email.com"
+ 建 .gitignore
+
+加入應該 commit 的檔案
+git add .
+
+設定主 branch 為 main
+git branch -M main
+
+設定遠端
+git remote add origin https://github.com/yukali58824-gif/company-hr-system.git
+
+推到 GitHub
+git push -u origin main
+
+取消追蹤不該 commit 的已加入檔案
+git rm -r --cached venv
+git rm -r --cached .venv
+
+如果你也不想追蹤 token.json 或 .env：
+git rm --cached .env
+git rm --cached google_meet/token.json
+git rm --cached google_meet/credentials.json
+
