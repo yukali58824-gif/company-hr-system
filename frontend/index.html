@@ -406,7 +406,7 @@ async function submitBooking() {
     // 正常初次預約成功
     const bId = responseData?.detail?.booking_id || responseData?.booking_id;
     modifyBookingContext = { email, bookingId: bId };
-    showSuccessPage(email);
+    showSuccessPage(email, bId);
 
   } catch(err) {
     console.error("預約流程捕獲到異常:", err);
@@ -419,7 +419,14 @@ async function submitBooking() {
   }
 }
 
-function showSuccessPage(email) {
+function showSuccessPage(email, bookingId) {
+  if (bookingId) {
+    sessionStorage.setItem('hr_last_booking_id', String(bookingId));
+  }
+  const modifyBtn = document.querySelector('#panel-4 button[onclick="switchToModifyMode()"]');
+  if (modifyBtn) {
+    modifyBtn.dataset.bookingId = bookingId || '';
+  }
   document.getElementById('success-detail').innerHTML = `
     <div style="margin-bottom:6px"><strong>職缺：</strong>${selectedPositionTitle}</div>
     <div style="margin-bottom:6px"><strong>日期：</strong>${selectedSlot.date}</div>
@@ -432,6 +439,13 @@ function showSuccessPage(email) {
 async function switchToModifyMode() {
   const emailInput = document.getElementById('applicant-email').value.trim();
   const emailToCheck = modifyBookingContext?.email || duplicateBookingContext?.email || emailInput;
+  const successModifyBtn = document.querySelector('#panel-4 button[onclick="switchToModifyMode()"]');
+  const storedBookingId = successModifyBtn?.dataset.bookingId || sessionStorage.getItem('hr_last_booking_id');
+
+  if (!modifyBookingContext?.bookingId && storedBookingId) {
+    modifyBookingContext = modifyBookingContext || { email: emailToCheck || emailInput };
+    modifyBookingContext.bookingId = storedBookingId;
+  }
 
   if (!modifyBookingContext?.bookingId && emailToCheck) {
     try {
@@ -463,10 +477,27 @@ async function switchToModifyMode() {
 document.getElementById('confirm-modify-btn').addEventListener('click', async () => {
   const errEl = document.getElementById('book-error');
   const btn = document.getElementById('confirm-modify-btn');
+  const email = document.getElementById('applicant-email').value.trim();
 
-  const targetBookingId = modifyBookingContext?.bookingId || duplicateBookingInfo?.booking_id;
+  const targetBookingId = modifyBookingContext?.bookingId || duplicateBookingInfo?.booking_id || sessionStorage.getItem('hr_last_booking_id');
   
-  if (!targetBookingId) {
+  let resolvedBookingId = targetBookingId;
+
+  if (!resolvedBookingId && email) {
+    try {
+      const res = await fetch(`/api/bookings/by-email?email=${encodeURIComponent(email)}`);
+      if (res.ok) {
+        const d = await res.json();
+        resolvedBookingId = d.booking_id;
+        modifyBookingContext = modifyBookingContext || { email };
+        modifyBookingContext.bookingId = resolvedBookingId;
+      }
+    } catch (e) {
+      console.warn('送出修改前無法再次查詢 booking id', e);
+    }
+  }
+
+  if (!resolvedBookingId) {
     errEl.textContent = '找不到原預約紀錄的 ID，請重新填寫表單或再次送出。';
     errEl.style.display = 'block';
     return;
@@ -488,7 +519,7 @@ document.getElementById('confirm-modify-btn').addEventListener('click', async ()
     const phone = document.getElementById('applicant-phone').value.trim();
 
     const requestBody = {
-      booking_id: String(targetBookingId),
+      booking_id: String(resolvedBookingId),
       slot_id: String(selectedSlot.id),
       position_id: String(selectedPositionId),
       name: name,
@@ -511,7 +542,8 @@ document.getElementById('confirm-modify-btn').addEventListener('click', async ()
     }
 
     toast('預約修改成功！');
-    showSuccessPage(email);
+    modifyBookingContext = { email, bookingId: String(resolvedBookingId) };
+    showSuccessPage(email, resolvedBookingId);
     document.getElementById('success-detail').innerHTML += `<div style="margin-top:10px;color:#331A00;font-weight:bold;"> 已成功修改原預約內容</div>`;
   } catch (err) {
     console.error("修改預約發生異常:", err);
@@ -539,6 +571,7 @@ function resetToInitialForm() {
   duplicateBookingContext = null;
   duplicateBookingInfo = null;
   modifyBookingContext = null;
+  sessionStorage.removeItem('hr_last_booking_id');
 
   document.getElementById('position-select').value = '';
   document.getElementById('inline-position-select').value = '';

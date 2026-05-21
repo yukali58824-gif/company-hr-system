@@ -21,7 +21,7 @@ from io import BytesIO
 
 from backend.auth import get_current_hr, verify_password, create_access_token, decode_token, SECRET_KEY
 from backend.database import get_pool
-from backend.email_utils import generate_cancel_token
+from backend.email_utils import generate_cancel_token, _send, BASE_URL
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +106,50 @@ KEYWORD_RESTRICTED_POSITIONS = ["產品", "研發"]  #限定一個時段只有�
 def is_keyword_restricted_position(title: str) -> bool:
     title_lower = title.lower()
     return any(keyword in title_lower for keyword in KEYWORD_RESTRICTED_POSITIONS)
+
+def build_confirmation_email(
+        applicant_name: str,
+        position_title: str,
+        slot_date,
+        start_time,
+        end_time,
+        cancel_token: str,
+        subject_prefix: str = "面試預約確認",
+) -> tuple[str, str]:
+        """組裝確認信 subject 與 HTML body，回傳 (subject, html)。"""
+        cancel_url = f"{BASE_URL}/cancel?t={cancel_token}"
+        date_str = slot_date.strftime("%Y-%m-%d") if slot_date else ""
+        start_str = start_time.strftime("%H:%M") if start_time else ""
+        end_str = end_time.strftime("%H:%M") if end_time else ""
+
+        subject = f"【{subject_prefix}】{applicant_name} — {date_str} {start_str}"
+        html = f"""
+        <div style="font-family:sans-serif;max-width:560px;margin:auto;color:#333;">
+            <h2 style="color:#2563eb;">{subject_prefix}</h2>
+            <p>您好，<b>{applicant_name}</b>，</p>
+            <p>您的面試預約已成功確認，詳細資訊如下：</p>
+            <table style="border-collapse:collapse;width:100%;margin:16px 0;">
+                <tr><td style="padding:8px;border:1px solid #e5e7eb;background:#f9fafb;width:30%;">應徵職缺</td>
+                        <td style="padding:8px;border:1px solid #e5e7eb;">{position_title}</td></tr>
+                <tr><td style="padding:8px;border:1px solid #e5e7eb;background:#f9fafb;">面試日期</td>
+                        <td style="padding:8px;border:1px solid #e5e7eb;">{date_str}</td></tr>
+                <tr><td style="padding:8px;border:1px solid #e5e7eb;background:#f9fafb;">面試時間</td>
+                        <td style="padding:8px;border:1px solid #e5e7eb;">{start_str} – {end_str}</td></tr>
+            </table>
+            <p style="margin-top:24px;">如需取消預約，請點擊下方按鈕（連結 7 天內有效）：</p>
+            <p>
+                <a href="{cancel_url}"
+                     style="display:inline-block;padding:10px 24px;background:#ef4444;
+                                    color:#fff;border-radius:6px;text-decoration:none;font-weight:bold;">
+                    取消預約
+                </a>
+            </p>
+            <p style="color:#6b7280;font-size:13px;margin-top:32px;">
+                若您有任何問題，歡迎在 104 留下訊息，或來電 0906-205-353。
+            </p>
+        </div>
+        """
+        return subject, html
 
 async def complete_expired_confirmed_bookings(conn):
         await conn.execute(
@@ -700,6 +744,100 @@ async def update_slot(
             *values
         )
 
+        time_fields_changed = (
+            payload.slot_date is not None or
+            payload.start_time is not None or
+            payload.end_time is not None
+        )
+
+        if time_fields_changed:
+            async with pool.acquire() as conn:
+                affected_bookings = await conn.fetch(
+                    """
+                    SELECT b.id AS booking_id,
+                           a.email AS applicant_email,
+                           a.name AS applicant_name,
+                           p.title AS position_title,
+                           s.slot_date, s.start_time, s.end_time
+                    FROM bookings b
+                    JOIN applicants a ON a.id = b.applicant_id
+                    JOIN job_positions p ON p.id = b.position_id
+                    JOIN interview_slots s ON s.id = b.slot_id
+                    WHERE b.slot_id = $1
+                      AND b.status = 'confirmed'
+                      AND b.deleted_at IS NULL
+                    """,
+                    slot_uuid
+                )
+
+                for bk in affected_bookings:
+                    booking_id = bk["booking_id"]
+                    recipient_email = bk["applicant_email"]
+
+                    cancel_token, cancel_expires = generate_cancel_token()
+
+                    await conn.execute(
+                        """
+                        UPDATE email_logs
+                        SET cancel_token = NULL,
+                            cancel_token_expires_at = NULL,
+                            updated_at = NOW()
+                        WHERE booking_id = $1
+                          AND email_type = 'booking_confirm'
+                        """,
+                        booking_id,
+                    )
+
+                    await conn.execute(
+                        """
+                        INSERT INTO email_logs
+                        (booking_id, recipient_email, email_type, status,
+                         cancel_token, cancel_token_expires_at)
+                        VALUES ($1, $2, 'booking_confirm', 'pending', $3, $4)
+                        """,
+                        booking_id,
+                        recipient_email,
+                        cancel_token,
+                        cancel_expires,
+                    )
+
+                    try:
+                        subject, html = build_confirmation_email(
+                            applicant_name=bk["applicant_name"],
+                            position_title=bk["position_title"],
+                            slot_date=bk["slot_date"],
+                            start_time=bk["start_time"],
+                            end_time=bk["end_time"],
+                            cancel_token=cancel_token,
+                            subject_prefix="面試時間異動確認",
+                        )
+                        await _send(to=recipient_email, subject=subject, html=html)
+                        await conn.execute(
+                            """
+                            UPDATE email_logs
+                            SET status='sent',
+                                sent_at=NOW(),
+                                updated_at=NOW()
+                            WHERE booking_id=$1 AND email_type='booking_confirm'
+                              AND cancel_token=$2
+                            """,
+                            booking_id,
+                            cancel_token,
+                        )
+                    except Exception:
+                        logger.exception(
+                            f"Failed to send reschedule email for booking {booking_id}"
+                        )
+
+                    try:
+                        asyncio.create_task(
+                            schedule_google_meet_for_booking(str(booking_id), delay_seconds=10)
+                        )
+                    except Exception:
+                        logger.exception(
+                            f"Failed to reschedule google meet for booking {booking_id}"
+                        )
+
         return {"ok": True}
 
     except HTTPException:
@@ -1159,13 +1297,38 @@ async def create_booking(payload: BookingCreate):
                     cancel_expires
                 )
 
+        # 直接寄出預約確認信
+        try:
+            subject, html = build_confirmation_email(
+                applicant_name=payload.name,
+                position_title=position["title"],
+                slot_date=slot["slot_date"],
+                start_time=slot["start_time"],
+                end_time=slot["end_time"],
+                cancel_token=cancel_token,
+            )
+            await _send(to=payload.email, subject=subject, html=html)
+            async with pool.acquire() as conn2:
+                await conn2.execute(
+                    """
+                    UPDATE email_logs
+                    SET status='sent',
+                        sent_at=NOW(),
+                        updated_at=NOW()
+                    WHERE booking_id=$1 AND email_type='booking_confirm' AND status='pending'
+                    """,
+                    booking_id,
+                )
+        except Exception:
+            logger.exception(f"Failed to send confirmation email for booking {booking_id}")
+
         # 排程在 30 秒後自動建立 Google Meet（用 CLI），並由 google_meet 進程寄送邀請信
         try:
             asyncio.create_task(schedule_google_meet_for_booking(str(booking_id), 30))
         except Exception:
             logger.exception("Failed to schedule google meet task")
 
-        return {"ok": True}
+        return {"ok": True, "booking_id": str(booking_id)}
 
     except HTTPException:
         raise
@@ -1382,6 +1545,38 @@ async def modify_booking(payload: BookingModify):
     except Exception as e:
         logger.error(f"Modify booking error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="修改預約失敗")
+
+@app.get("/api/bookings/by-email")
+async def get_booking_by_email(email: str):
+    try:
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT b.id AS booking_id
+                FROM bookings b
+                JOIN applicants a ON a.id = b.applicant_id
+                WHERE LOWER(a.email)=LOWER($1)
+                  AND b.status='confirmed'
+                  AND b.deleted_at IS NULL
+                ORDER BY b.booked_at DESC
+                LIMIT 1
+                """,
+                email,
+            )
+
+        if not row:
+            raise HTTPException(status_code=404, detail="找不到預約紀錄")
+
+        return {"booking_id": str(row["booking_id"])}
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+        logger.error(f"Get booking by email error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="查詢預約紀錄失敗")
 
 @app.post("/api/bookings/cancel-existing")
 async def cancel_existing_booking(payload: CancelBookingRequest):
