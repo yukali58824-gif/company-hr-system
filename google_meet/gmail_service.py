@@ -262,7 +262,7 @@ def send_to_attendees(
     applicant_phone: str = "",
     delay_seconds: float = 1.0,
 ) -> dict:
-    """寄送日歷邀請給內部參與者"""
+    """寄送日歷邀請給內部參與者（僅發送日歷通知，不發送 HTML 邀約說明）"""
     total = len(attendees)
     success = []
     failed = []
@@ -276,20 +276,7 @@ def send_to_attendees(
         role = person.get("role", "與會者")
 
         try:
-            html = build_email_html(
-                recipient_name=name,
-                recipient_role=role,
-                subject=subject,
-                start_dt=start_dt,
-                end_dt=end_dt,
-                meet_link=meet_link,
-                description=description,
-                organizer_email=sender,
-                all_attendees=attendees,
-                job_title=job_title,
-                applicant_email=applicant_email,
-                applicant_phone=applicant_phone,
-            )
+            # 只生成日歷邀請，不生成 HTML 邀約說明
             ical = build_ical_event(
                 organizer_email=sender,
                 subject=subject,
@@ -299,7 +286,18 @@ def send_to_attendees(
                 meet_link=meet_link,
                 attendees=attendees,
             )
-            send_calendar_invite(gmail, sender, email, subject, html, ical)
+            
+            # 使用最小化 HTML 內容搭配 iCal
+            minimal_html = f"""
+<html>
+<body style="font-family: Arial, sans-serif;">
+  <p><strong>會議標題：</strong> {subject}</p>
+  <p><strong>時間：</strong> {start_dt.strftime("%Y年%m月%d日 %H:%M")} - {end_dt.strftime("%H:%M")}</p>
+  <p><strong>Google Meet：</strong> {meet_link}</p>
+</body>
+</html>
+"""
+            send_calendar_invite(gmail, sender, email, subject, minimal_html, ical)
             success.append(email)
             print(f"  [{i:02d}/{total}] ✅ {name}（{role}）→ {email}")
 
