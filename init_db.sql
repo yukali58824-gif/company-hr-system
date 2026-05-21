@@ -102,6 +102,7 @@ CREATE TABLE IF NOT EXISTS email_logs (
     cancel_token_used_at    TIMESTAMP,
     last_attempted_at       TIMESTAMP,
     sent_at                 TIMESTAMP,
+    updated_at              TIMESTAMP,
     error_message           TEXT
 );
 
