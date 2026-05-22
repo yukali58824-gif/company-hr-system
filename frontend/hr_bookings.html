@@ -46,7 +46,7 @@
       padding: 24px 12px;
     }
 
-    /* 統一所有選單外觀樣式，原生扁平化、效能極佳 */
+    /* 統一所有選單外觀樣式，原生扁平化 */
     .filter-select {
       padding: 8px 32px 8px 12px;
       border: 1px solid var(--border);
@@ -94,7 +94,7 @@
       display: inline-flex;
       align-items: center;
       padding: 6px 12px;
-      background-color: #1a73e8;
+      background-color: #206fd6;
       color: white !important;
       text-decoration: none !important;
       border-radius: 6px;
@@ -103,39 +103,11 @@
       transition: background-color 0.2s;
     }
     .meet-btn:hover {
-      background-color: #1557b0;
+      background-color: #0059ff;
     }
     .meet-none {
       color: #999;
       font-size: 13px;
-    }
-
-    /* Excel 實體表頭內嵌篩選容器 */
-    .header-filter-container {
-      display: inline-flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 6px;
-      position: relative;
-    }
-    /* 表頭明顯深黑色的 ▼ */
-    .filter-trigger-btn {
-      font-size: 11px;
-      color: #000 !important;
-      font-weight: bold;
-      cursor: pointer;
-      position: relative;
-      display: inline-block;
-    }
-    .header-select-hidden {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      opacity: 0;
-      cursor: pointer;
-      z-index: 5;
     }
 
     /* 操作按鈕間距拉開 */
@@ -263,41 +235,17 @@
             <th>應徵者</th>
             <th>Email</th>
             <th>電話</th>
-            <th>
-              <div class="header-filter-container">
-                <span>應徵職缺</span>
-                <div class="filter-trigger-btn">
-                  ▼
-                  <select id="head-filter-pos" class="header-select-hidden" onchange="syncHeaderFilter('head-filter-pos', 'filter-position')">
-                    <option value="">全部職缺</option>
-                  </select>
-                </div>
-              </div>
-            </th>
+            <th>應徵職缺</th>
             <th>面試日期</th>
             <th>時間</th>
-            <th>Meeting Link</th>
-            <th>
-              <div class="header-filter-container">
-                <span>狀態</span>
-                <div class="filter-trigger-btn">
-                  ▼
-                  <select id="head-filter-status" class="header-select-hidden" onchange="syncHeaderFilter('head-filter-status', 'filter-status')">
-                    <option value="">全部狀態</option>
-                    <option value="confirmed">confirmed</option>
-                    <option value="auto_completed">auto_completed</option>
-                    <option value="no_show">no_show</option>
-                    <option value="cancelled">cancelled</option>
-                  </select>
-                </div>
-              </div>
-            </th>
+            <th>狀態</th>
             <th>預約時間</th>
-            <th style="width:120px">操作</th>
+            <th>會議室</th>
+            <th style="width:120px">編輯/刪除</th>
           </tr>
         </thead>
         <tbody id="bookings-body">
-          <tr><td colspan="11" class="empty">載入中…</td></tr>
+          <tr><td colspan="10" class="empty">載入中…</td></tr>
         </tbody>
       </table>
     </div>
@@ -330,6 +278,12 @@ let editingRowId = null;
 let editOptions = { positions: [], slots: [] };
 let deleteTarget = null; // 紀錄待刪除項目
 
+// 全域定義允許的時間點清單 (9:00-12:00, 14:00-17:30)
+const ALLOWED_TIMES = [
+  "09:00", "09:30", "10:00", "10:30", "11:00", "11:30", "12:00",
+  "14:00", "14:30", "15:00", "15:30", "16:00", "16:30", "17:00", "17:30"
+];
+
 // Auth check
 (async () => {
   try {
@@ -351,11 +305,60 @@ const statusClass = {
   no_show: 'badge-cancelled',
 };
 
-// 表頭與上方控制列下拉選單連動
-function syncHeaderFilter(headerId, mainId) {
-  const val = document.getElementById(headerId).value;
-  document.getElementById(mainId).value = val;
-  applyFilter();
+// 輔助函式：產生開始時間下拉選單選項
+function generateStartTimeOptions(selectedTime) {
+  let html = '';
+  const matchTime = selectedTime ? selectedTime.substring(0, 5) : '';
+  
+  let times = [...ALLOWED_TIMES];
+  if (matchTime && !times.includes(matchTime)) {
+    times.unshift(matchTime);
+  }
+
+  times.forEach(timeVal => {
+    const isSelected = (timeVal === matchTime) ? 'selected' : '';
+    html += `<option value="${timeVal}" ${isSelected}>${timeVal}</option>`;
+  });
+  return html;
+}
+
+// 輔助函式：根據所選的「開始時間」，動態更新並產生不早於開始時間的「結束時間」選項
+function generateEndTimeOptions(selectedEndTime, startTimeVal) {
+  let html = '';
+  const matchEndTime = selectedEndTime ? selectedEndTime.substring(0, 5) : '';
+  const matchStartTime = startTimeVal ? startTimeVal.substring(0, 5) : '00:00';
+  
+  let times = [...ALLOWED_TIMES];
+  if (matchEndTime && !times.includes(matchEndTime)) {
+    times.unshift(matchEndTime);
+  }
+
+  // 核心篩選：結束時間必須「大於」開始時間
+  const filteredTimes = times.filter(t => t > matchStartTime);
+
+  filteredTimes.forEach(timeVal => {
+    const isSelected = (timeVal === matchEndTime) ? 'selected' : '';
+    html += `<option value="${timeVal}" ${isSelected}>${timeVal}</option>`;
+  });
+  return html;
+}
+
+// 當開始時間被改變時，動態刷新對應那列的結束時間選單
+function handleStartTimeChange(id) {
+  const startTimeEl = document.getElementById(`edit-start-time-${id}`);
+  const endTimeEl = document.getElementById(`edit-end-time-${id}`);
+  if (!startTimeEl || !endTimeEl) return;
+  
+  const newStartTime = startTimeEl.value;
+  const currentEndTime = endTimeEl.value;
+  
+  // 重新渲染結束時間選單，把早於新開始時間的選項直接濾除
+  endTimeEl.innerHTML = generateEndTimeOptions(currentEndTime, newStartTime);
+  
+  // 防呆機制：如果原本選擇的結束時間已經不合法，自動跳到新結束選單的第一個項目
+  if (endTimeEl.value <= newStartTime && endTimeEl.options.length > 0) {
+    endTimeEl.selectedIndex = 0;
+  }
 }
 
 function updateFilterOptions(data) {
@@ -377,9 +380,6 @@ function updateFilterOptions(data) {
   populate('filter-date', dates, '所有面試日期');
   populate('filter-name', names, '所有姓名');
   populate('filter-email', emails, '所有 Email');
-
-  // 同步更新表頭的動態職缺選單
-  populate('head-filter-pos', positions, '全部職缺');
 }
 
 function renderTable(data) {
@@ -387,7 +387,7 @@ function renderTable(data) {
   document.getElementById('count-label').textContent = `共 ${data.length} 筆`;
   
   if (!data.length) {
-    tbody.innerHTML = '<tr><td colspan="11" class="empty">無符合資料</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" class="empty">無符合資料</td></tr>';
     return;
   }
   
@@ -397,6 +397,10 @@ function renderTable(data) {
         .map(p => `<option value="${p.id}" ${b.position_id === p.id ? 'selected' : ''}>${p.title}</option>`)
         .join('');
       
+      const startTimeOptions = generateStartTimeOptions(b.start_time);
+      // 結束時間傳入當前的 start_time 做過濾，使其不顯示早於開始時間的項目
+      const endTimeOptions = generateEndTimeOptions(b.end_time, b.start_time);
+      
       return `
         <tr style="background: rgba(212, 175, 55, 0.05);">
           <td><input type="text" value="${b.applicant_name || ''}" id="edit-name-${b.id}" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:4px;font-weight:600;"></td>
@@ -405,10 +409,21 @@ function renderTable(data) {
           <td><select id="edit-position-${b.id}" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:4px;">${positionOptions}</select></td>
           <td><input type="date" value="${b.slot_date || ''}" id="edit-date-${b.id}" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:4px;font-size:13px;"></td>
           <td style="font-size:12px;">
-            <input type="time" value="${b.start_time ? b.start_time.substring(0,5) : ''}" id="edit-start-time-${b.id}" style="width:45%;padding:6px;border:1px solid var(--border);border-radius:4px;">
+            <select id="edit-start-time-${b.id}" onchange="handleStartTimeChange('${b.id}')" style="width:45%;padding:6px;border:1px solid var(--border);border-radius:4px;">
+              ${startTimeOptions}
+            </select>
             ~
-            <input type="time" value="${b.end_time ? b.end_time.substring(0,5) : ''}" id="edit-end-time-${b.id}" style="width:45%;padding:6px;border:1px solid var(--border);border-radius:4px;">
+            <select id="edit-end-time-${b.id}" style="width:45%;padding:6px;border:1px solid var(--border);border-radius:4px;">
+              ${endTimeOptions}
+            </select>
           </td>
+          <td><select id="edit-status-${b.id}" style="padding:6px;border:1px solid var(--border);border-radius:4px;">
+            <option value="confirmed" ${b.status === 'confirmed' ? 'selected' : ''}>confirmed</option>
+            <option value="auto_completed" ${b.status === 'auto_completed' ? 'selected' : ''}>auto_completed</option>
+            <option value="no_show" ${b.status === 'no_show' ? 'selected' : ''}>no_show</option>
+            <option value="cancelled" ${b.status === 'cancelled' ? 'selected' : ''}>cancelled</option>
+          </select></td>
+          <td style="color:var(--text3);font-size:12px">${b.booked_at ? b.booked_at.slice(0,16).replace('T',' ') : ''}</td>
           <td>
             <input
               type="url"
@@ -418,13 +433,6 @@ function renderTable(data) {
               style="width:100%;padding:6px;border:1px solid var(--border);border-radius:4px;font-size:12px;"
             >
           </td>
-          <td><select id="edit-status-${b.id}" style="padding:6px;border:1px solid var(--border);border-radius:4px;">
-            <option value="confirmed" ${b.status === 'confirmed' ? 'selected' : ''}>confirmed</option>
-            <option value="auto_completed" ${b.status === 'auto_completed' ? 'selected' : ''}>auto_completed</option>
-            <option value="no_show" ${b.status === 'no_show' ? 'selected' : ''}>no_show</option>
-            <option value="cancelled" ${b.status === 'cancelled' ? 'selected' : ''}>cancelled</option>
-          </select></td>
-          <td style="color:var(--text3);font-size:12px">${b.booked_at ? b.booked_at.slice(0,16).replace('T',' ') : ''}</td>
           <td>
             <div class="action-btns">
               <button class="btn btn-primary btn-sm" style="padding:6px 8px;font-size:12px;" onclick="saveBookingEdit('${b.id}')">✓ 儲存</button>
@@ -442,14 +450,14 @@ function renderTable(data) {
         <td style="color:var(--text2);font-size:13px">${b.applicant_phone}</td>
         <td style="color:var(--text2);font-weight:500">${b.position_title}</td>
         <td style="color:var(--text2);font-size:13px">${b.slot_date}</td>
-        <td style="white-space:nowrap;color:var(--text2);font-size:13px">${b.start_time} – ${b.end_time}</td>
-        <td>
-          ${b.google_meet_link
-            ? `<a href="${b.google_meet_link}" target="_blank" rel="noopener noreferrer" class="meet-btn">加入 Google Meet</a>`
-            : '<span class="meet-none">—</span>'}
-        </td>
+        <td style="white-space:nowrap;color:var(--text2);font-size:13px">${b.start_time ? b.start_time.substring(0,5) : ''} – ${b.end_time ? b.end_time.substring(0,5) : ''}</td>
         <td><span class="badge ${statusClass[b.status] || ''}">${b.status}</span></td>
         <td style="color:var(--text3);font-size:12px">${b.booked_at ? b.booked_at.slice(0,16).replace('T',' ') : ''}</td>
+        <td>
+          ${b.google_meet_link
+            ? `<a href="${b.google_meet_link}" target="_blank" rel="noopener noreferrer" class="meet-btn">加入</a>`
+            : '<span class="meet-none">—</span>'}
+        </td>
         <td>
           <div class="action-btns">
             <button class="icon-btn" title="編輯此預約" onclick="editingRowId='${b.id}';applyFilter()" style="border:1px solid rgba(212, 175, 55, 0.4); border-radius: 4px;">✏️</button>
@@ -469,10 +477,6 @@ function applyFilter() {
   const emailSelect = document.getElementById('filter-email').value;
   const keyword = document.getElementById('keyword-search').value.toLowerCase().trim();
 
-  // 同步讓表格頭部的隱藏選單顯示正確的值
-  document.getElementById('head-filter-status').value = status;
-  document.getElementById('head-filter-pos').value = position;
-
   const filtered = allBookings.filter(b => {
     const matchStatus = !status || b.status === status;
     const matchPos = !position || b.position_title === position;
@@ -490,7 +494,7 @@ function applyFilter() {
   renderTable(filtered);
 }
 
-// 監聽所有原生下拉元件的更動
+// 監聽所有控制元件的更動
 ['filter-status', 'filter-position', 'filter-date', 'filter-name', 'filter-email'].forEach(id => {
   document.getElementById(id).addEventListener('change', applyFilter);
 });
@@ -517,7 +521,6 @@ async function loadBookings() {
   }
 }
 
-// 喚起中央自訂確認視窗代替原生 confirm
 function askDeleteBooking(id, name) {
   deleteTarget = { id, name };
   document.getElementById('confirm-modal-text').innerText = `確定要刪除「${name}」的預約紀錄？\n（此操作不可復原）`;
@@ -529,7 +532,6 @@ function closeConfirmModal() {
   deleteTarget = null;
 }
 
-// 綁定確認刪除按鈕
 document.getElementById('modal-confirm-btn').onclick = async () => {
   if (!deleteTarget) return;
   const { id, name } = deleteTarget;
@@ -560,6 +562,7 @@ async function saveBookingEdit(id) {
   if (!applicant_email.trim()) { toast('Email 不能為空', 'error'); return; }
   if (!slot_date) { toast('面試日期不能為空', 'error'); return; }
   if (!start_time || !end_time) { toast('面試時間不能為空', 'error'); return; }
+  if (start_time >= end_time) { toast('結束時間必須大於開始時間', 'error'); return; }
   
   const res = await fetch(`/api/bookings/${id}`, {
     method: 'PATCH',
