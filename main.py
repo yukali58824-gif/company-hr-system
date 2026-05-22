@@ -254,10 +254,34 @@ async def send_event_cancellation_notification(
         )
 
 async def complete_expired_confirmed_bookings(conn):
+        # 先獲取所有即將過期的 confirmed 預約及其 google_event_id
+        expired_bookings = await conn.fetch(
+                """
+                SELECT b.id, b.google_event_id
+                FROM bookings b
+                JOIN interview_slots s ON b.slot_id = s.id
+                WHERE b.status = 'confirmed'
+                    AND b.deleted_at IS NULL
+                    AND (
+                                s.slot_date + INTERVAL '1 day' < NOW()::date
+                                OR (s.slot_date + INTERVAL '1 day' = NOW()::date AND s.end_time <= NOW()::time)
+                            )
+                """
+        )
+        
+        # 刪除過期預約的 Google Calendar 事件
+        for booking in expired_bookings:
+            if booking.get("google_event_id"):
+                try:
+                    await delete_old_google_event(booking["google_event_id"])
+                except Exception as e:
+                    logger.exception(f"Failed to delete expired booking event {booking['id']}: {e}")
+        
+        # 更新狀態為 auto_completed
         await conn.execute(
                 """
                 UPDATE bookings b
-                SET status='auto_completed'
+                SET status='auto_completed', google_event_id=NULL
                 FROM interview_slots s
                 WHERE b.slot_id = s.id
                     AND b.status = 'confirmed'
@@ -2520,6 +2544,12 @@ async def update_booking(
                             raise HTTPException(status_code=400, detail="指定預約時段不存在")
 
                         if current_status == 'confirmed' and new_status != 'confirmed':
+                            # 如果狀態變為 no_show 或 cancelled，刪除 Google Calendar 事件
+                            if new_status in ('no_show', 'cancelled'):
+                                if booking.get("google_event_id"):
+                                    await delete_old_google_event(booking["google_event_id"])
+                                updates.append("google_event_id=NULL")
+                            
                             new_booked_count = max((slot['booked_count'] or 0) - 1, 0)
                             new_slot_status = slot['status']
                             if new_slot_status not in ('cancelled', 'closed'):
