@@ -8,6 +8,8 @@ python.exe -m uvicorn main:app --port 8002
 
 uvicorn main:app --reload
 
+uvicorn main:app --reload --host 127.0.0.1 --port 8001
+
 hr_login.html
 auth.py 
 

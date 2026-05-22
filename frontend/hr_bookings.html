@@ -86,6 +86,117 @@
     #bookings-table th, #bookings-table td {
       white-space: nowrap;
       padding: 12px 10px;
+      vertical-align: middle;
+    }
+
+    /* Meeting Link 樣式按鈕 */
+    .meet-btn {
+      display: inline-flex;
+      align-items: center;
+      padding: 6px 12px;
+      background-color: #1a73e8;
+      color: white !important;
+      text-decoration: none !important;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 500;
+      transition: background-color 0.2s;
+    }
+    .meet-btn:hover {
+      background-color: #1557b0;
+    }
+    .meet-none {
+      color: #999;
+      font-size: 13px;
+    }
+
+    /* Excel 實體表頭內嵌篩選容器 */
+    .header-filter-container {
+      display: inline-flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      position: relative;
+    }
+    /* 表頭明顯深黑色的 ▼ */
+    .filter-trigger-btn {
+      font-size: 11px;
+      color: #000 !important;
+      font-weight: bold;
+      cursor: pointer;
+      position: relative;
+      display: inline-block;
+    }
+    .header-select-hidden {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      opacity: 0;
+      cursor: pointer;
+      z-index: 5;
+    }
+
+    /* 操作按鈕間距拉開 */
+    .action-btns {
+      display: flex;
+      gap: 20px;
+      align-items: center;
+    }
+    .icon-btn {
+      border: none;
+      background: none;
+      cursor: pointer;
+      font-size: 16px;
+      padding: 4px;
+      transition: transform 0.2s;
+    }
+    .icon-btn:hover {
+      transform: scale(1.15);
+    }
+
+    /* 中央確認彈窗 (Modal) */
+    #confirm-modal {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0,0,0,0.4);
+      z-index: 9999;
+      align-items: center;
+      justify-content: center;
+    }
+    .modal-box {
+      background: white;
+      padding: 25px;
+      border-radius: 12px;
+      width: 320px;
+      text-align: center;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+    }
+    .modal-btns {
+      display: flex;
+      gap: 10px;
+      margin-top: 20px;
+    }
+    .btn-modal {
+      flex: 1;
+      padding: 10px;
+      border-radius: 6px;
+      border: none;
+      cursor: pointer;
+      font-weight: 500;
+    }
+    .btn-cancel {
+      background: #eee;
+      color: #666;
+    }
+    .btn-confirm {
+      background: #d32f2f;
+      color: white;
     }
   </style>
 </head>
@@ -152,11 +263,35 @@
             <th>應徵者</th>
             <th>Email</th>
             <th>電話</th>
-            <th>應徵職缺</th>
+            <th>
+              <div class="header-filter-container">
+                <span>應徵職缺</span>
+                <div class="filter-trigger-btn">
+                  ▼
+                  <select id="head-filter-pos" class="header-select-hidden" onchange="syncHeaderFilter('head-filter-pos', 'filter-position')">
+                    <option value="">全部職缺</option>
+                  </select>
+                </div>
+              </div>
+            </th>
             <th>面試日期</th>
             <th>時間</th>
             <th>Meeting Link</th>
-            <th>狀態</th>
+            <th>
+              <div class="header-filter-container">
+                <span>狀態</span>
+                <div class="filter-trigger-btn">
+                  ▼
+                  <select id="head-filter-status" class="header-select-hidden" onchange="syncHeaderFilter('head-filter-status', 'filter-status')">
+                    <option value="">全部狀態</option>
+                    <option value="confirmed">confirmed</option>
+                    <option value="auto_completed">auto_completed</option>
+                    <option value="no_show">no_show</option>
+                    <option value="cancelled">cancelled</option>
+                  </select>
+                </div>
+              </div>
+            </th>
             <th>預約時間</th>
             <th style="width:120px">操作</th>
           </tr>
@@ -165,6 +300,17 @@
           <tr><td colspan="11" class="empty">載入中…</td></tr>
         </tbody>
       </table>
+    </div>
+  </div>
+</div>
+
+<div id="confirm-modal">
+  <div class="modal-box">
+    <h3 style="margin-top:0; color:#333;">確認刪除？</h3>
+    <p style="color:#666; font-size:14px; line-height: 1.5;" id="confirm-modal-text">此操作將無法還原，確定要刪除嗎？</p>
+    <div class="modal-btns">
+      <button class="btn-modal btn-cancel" onclick="closeConfirmModal()">取消</button>
+      <button class="btn-modal btn-confirm" id="modal-confirm-btn">確定刪除</button>
     </div>
   </div>
 </div>
@@ -182,6 +328,7 @@ const toast = (msg, type='success') => {
 let allBookings = [];
 let editingRowId = null;
 let editOptions = { positions: [], slots: [] };
+let deleteTarget = null; // 紀錄待刪除項目
 
 // Auth check
 (async () => {
@@ -204,15 +351,22 @@ const statusClass = {
   no_show: 'badge-cancelled',
 };
 
-// 效能優化：完全透過資料自動萃取「有意義的面試日期」並排序
+// 表頭與上方控制列下拉選單連動
+function syncHeaderFilter(headerId, mainId) {
+  const val = document.getElementById(headerId).value;
+  document.getElementById(mainId).value = val;
+  applyFilter();
+}
+
 function updateFilterOptions(data) {
   const positions = [...new Set(data.map(b => b.position_title))].sort();
-  const dates = [...new Set(data.map(b => b.slot_date))].sort(); // 萃取所有不重複的面試日期
+  const dates = [...new Set(data.map(b => b.slot_date))].sort();
   const names = [...new Set(data.map(b => b.applicant_name))].sort();
   const emails = [...new Set(data.map(b => b.applicant_email))].sort();
 
   const populate = (id, list, defaultText) => {
     const el = document.getElementById(id);
+    if (!el) return;
     const currentVal = el.value;
     el.innerHTML = `<option value="">${defaultText}</option>` + 
       list.map(item => `<option value="${item}">${item}</option>`).join('');
@@ -220,9 +374,12 @@ function updateFilterOptions(data) {
   };
 
   populate('filter-position', positions, '所有職缺');
-  populate('filter-date', dates, '所有面試日期'); // 渲染高效日期清單
+  populate('filter-date', dates, '所有面試日期');
   populate('filter-name', names, '所有姓名');
   populate('filter-email', emails, '所有 Email');
+
+  // 同步更新表頭的動態職缺選單
+  populate('head-filter-pos', positions, '全部職缺');
 }
 
 function renderTable(data) {
@@ -230,7 +387,7 @@ function renderTable(data) {
   document.getElementById('count-label').textContent = `共 ${data.length} 筆`;
   
   if (!data.length) {
-    tbody.innerHTML = '<tr><td colspan="10" class="empty">無符合資料</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" class="empty">無符合資料</td></tr>';
     return;
   }
   
@@ -252,7 +409,15 @@ function renderTable(data) {
             ~
             <input type="time" value="${b.end_time ? b.end_time.substring(0,5) : ''}" id="edit-end-time-${b.id}" style="width:45%;padding:6px;border:1px solid var(--border);border-radius:4px;">
           </td>
-          <td style="color:var(--text3);font-size:12px;">Meeting Link由面試時段決定</td>
+          <td>
+            <input
+              type="url"
+              value="${b.google_meet_link || ''}"
+              id="edit-meet-link-${b.id}"
+              placeholder="https://meet.google.com/..."
+              style="width:100%;padding:6px;border:1px solid var(--border);border-radius:4px;font-size:12px;"
+            >
+          </td>
           <td><select id="edit-status-${b.id}" style="padding:6px;border:1px solid var(--border);border-radius:4px;">
             <option value="confirmed" ${b.status === 'confirmed' ? 'selected' : ''}>confirmed</option>
             <option value="auto_completed" ${b.status === 'auto_completed' ? 'selected' : ''}>auto_completed</option>
@@ -260,9 +425,11 @@ function renderTable(data) {
             <option value="cancelled" ${b.status === 'cancelled' ? 'selected' : ''}>cancelled</option>
           </select></td>
           <td style="color:var(--text3);font-size:12px">${b.booked_at ? b.booked_at.slice(0,16).replace('T',' ') : ''}</td>
-          <td style="white-space:nowrap;">
-            <button class="btn btn-primary btn-sm" style="padding:6px 8px;font-size:12px;" onclick="saveBookingEdit('${b.id}')">✓ 儲存</button>
-            <button class="btn btn-ghost btn-sm" style="padding:6px 8px;font-size:12px;" onclick="editingRowId=null;applyFilter()">✕ 取消</button>
+          <td>
+            <div class="action-btns">
+              <button class="btn btn-primary btn-sm" style="padding:6px 8px;font-size:12px;" onclick="saveBookingEdit('${b.id}')">✓ 儲存</button>
+              <button class="btn btn-ghost btn-sm" style="padding:6px 8px;font-size:12px;" onclick="editingRowId=null;applyFilter()">✕ 取消</button>
+            </div>
           </td>
         </tr>
       `;
@@ -276,12 +443,18 @@ function renderTable(data) {
         <td style="color:var(--text2);font-weight:500">${b.position_title}</td>
         <td style="color:var(--text2);font-size:13px">${b.slot_date}</td>
         <td style="white-space:nowrap;color:var(--text2);font-size:13px">${b.start_time} – ${b.end_time}</td>
-        <td><a href="${b.google_meet_link || '#'}" target="_blank" style="color:var(--accent);font-size:13px;text-decoration:none;">${b.google_meet_link ? '   🔗   ' : '—'}</a></td>
+        <td>
+          ${b.google_meet_link
+            ? `<a href="${b.google_meet_link}" target="_blank" rel="noopener noreferrer" class="meet-btn">加入 Google Meet</a>`
+            : '<span class="meet-none">—</span>'}
+        </td>
         <td><span class="badge ${statusClass[b.status] || ''}">${b.status}</span></td>
         <td style="color:var(--text3);font-size:12px">${b.booked_at ? b.booked_at.slice(0,16).replace('T',' ') : ''}</td>
         <td>
-          <button class="btn btn-ghost btn-sm" title="編輯此預約" onclick="editingRowId='${b.id}';applyFilter()" style="padding:6px;font-size:14px;min-width:unset;border:1px solid rgba(212, 175, 55, 0.4);">✏️</button>
-          <button class="btn btn-ghost btn-sm" title="刪除此預約" style="padding:6px;font-size:14px;min-width:unset;" onclick="deleteBooking('${b.id}', '${b.applicant_name}')">🗑️</button>
+          <div class="action-btns">
+            <button class="icon-btn" title="編輯此預約" onclick="editingRowId='${b.id}';applyFilter()" style="border:1px solid rgba(212, 175, 55, 0.4); border-radius: 4px;">✏️</button>
+            <button class="icon-btn" title="刪除此預約" onclick="askDeleteBooking('${b.id}', '${b.applicant_name}')">🗑️</button>
+          </div>
         </td>
       </tr>
     `;
@@ -295,6 +468,10 @@ function applyFilter() {
   const nameSelect = document.getElementById('filter-name').value;
   const emailSelect = document.getElementById('filter-email').value;
   const keyword = document.getElementById('keyword-search').value.toLowerCase().trim();
+
+  // 同步讓表格頭部的隱藏選單顯示正確的值
+  document.getElementById('head-filter-status').value = status;
+  document.getElementById('head-filter-pos').value = position;
 
   const filtered = allBookings.filter(b => {
     const matchStatus = !status || b.status === status;
@@ -327,8 +504,7 @@ async function loadBookings() {
       fetch('/api/booking-edit-options')
     ]);
     
-    if (!bookingsRes.ok) { window.location.href = '/hr/login'; return; }
-    if (!optionsRes.ok) { window.location.href = '/hr/login'; return; }
+    if (!bookingsRes.ok || !optionsRes.ok) { window.location.href = '/hr/login'; return; }
     
     allBookings = await bookingsRes.json();
     editOptions = await optionsRes.json();
@@ -341,16 +517,33 @@ async function loadBookings() {
   }
 }
 
-async function deleteBooking(id, name) {
-  if (!confirm(`確定要刪除「${name}」的預約紀錄？\n（此操作不可復原）`)) return;
+// 喚起中央自訂確認視窗代替原生 confirm
+function askDeleteBooking(id, name) {
+  deleteTarget = { id, name };
+  document.getElementById('confirm-modal-text').innerText = `確定要刪除「${name}」的預約紀錄？\n（此操作不可復原）`;
+  document.getElementById('confirm-modal').style.display = 'flex';
+}
+
+function closeConfirmModal() {
+  document.getElementById('confirm-modal').style.display = 'none';
+  deleteTarget = null;
+}
+
+// 綁定確認刪除按鈕
+document.getElementById('modal-confirm-btn').onclick = async () => {
+  if (!deleteTarget) return;
+  const { id, name } = deleteTarget;
+  
   const res = await fetch(`/api/bookings/${id}`, { method:'DELETE' });
+  closeConfirmModal();
+  
   if (res.ok) { 
     toast(`已刪除 ${name} 的預約`); 
     loadBookings(); 
   } else {
     toast('刪除失敗', 'error');
   }
-}
+};
 
 async function saveBookingEdit(id) {
   const applicant_name = document.getElementById(`edit-name-${id}`).value;
@@ -360,6 +553,7 @@ async function saveBookingEdit(id) {
   const slot_date = document.getElementById(`edit-date-${id}`).value;
   const start_time = document.getElementById(`edit-start-time-${id}`).value;
   const end_time = document.getElementById(`edit-end-time-${id}`).value;
+  const google_meet_link = document.getElementById(`edit-meet-link-${id}`).value;
   const status = document.getElementById(`edit-status-${id}`).value;
   
   if (!applicant_name.trim()) { toast('應徵者名字不能為空', 'error'); return; }
@@ -378,6 +572,7 @@ async function saveBookingEdit(id) {
       slot_date,
       start_time,
       end_time,
+      google_meet_link,
       status
     })
   });

@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 import uuid
 import logging
 import subprocess
@@ -24,6 +25,11 @@ from backend.database import get_pool
 from backend.email_utils import generate_cancel_token, _send, BASE_URL
 
 logger = logging.getLogger(__name__)
+
+
+def log_json(level: int, event: str, **fields):
+    payload = {"event": event, **fields}
+    logger.log(level, json.dumps(payload, ensure_ascii=False, default=str, separators=(",", ":")))
 
 # ─────────────────────────────────────────────
 # Initialize FastAPI
@@ -100,6 +106,7 @@ class BookingUpdate(BaseModel):
     slot_date: Optional[str] = None
     start_time: Optional[str] = None
     end_time: Optional[str] = None
+    google_meet_link: Optional[str] = None
 
 KEYWORD_RESTRICTED_POSITIONS = ["產品", "研發"]  #限定一個時段只有一個名額
 
@@ -194,7 +201,7 @@ async def schedule_google_meet_for_booking(booking_id: str, delay_seconds: int =
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT b.id, a.name AS applicant_name, a.email AS applicant_email,
+                SELECT b.id, b.slot_id, a.id AS applicant_id, a.name AS applicant_name, a.email AS applicant_email,
                        a.phone AS applicant_phone,
                        p.title AS job_title, s.slot_date, s.start_time, s.end_time
                 FROM bookings b
@@ -246,6 +253,16 @@ async def schedule_google_meet_for_booking(booking_id: str, delay_seconds: int =
         out = result.stdout or ""
         err = result.stderr or ""
 
+        log_json(
+            logging.INFO,
+            "google_meet.subprocess_finished",
+            booking_id=booking_id,
+            returncode=result.returncode,
+            stdout_preview=out[:2000],
+            stderr_preview=err[:2000],
+            command=proc_args,
+        )
+
         event_id = None
         meet_link = None
         for line in out.splitlines():
@@ -254,17 +271,101 @@ async def schedule_google_meet_for_booking(booking_id: str, delay_seconds: int =
             if line.startswith("MEET_LINK:"):
                 meet_link = line.split("MEET_LINK:", 1)[1].strip()
 
+        log_json(
+            logging.INFO,
+            "google_meet.subprocess_parsed",
+            booking_id=booking_id,
+            event_id=event_id,
+            meet_link=meet_link,
+        )
+
         if event_id or meet_link:
             async with pool.acquire() as conn:
-                await conn.execute(
+                booking_update_result = await conn.execute(
                     "UPDATE bookings SET google_event_id=$2, google_meet_link=$3 WHERE id=$1",
                     uuid.UUID(booking_id),
                     event_id,
                     meet_link,
                 )
+                slot_update_result = await conn.execute(
+                    "UPDATE interview_slots SET google_event_id=$2, google_meet_link=$3, updated_at=NOW() WHERE id=$1",
+                    row["slot_id"],
+                    event_id,
+                    meet_link,
+                )
+                applicant_update_result = await conn.execute(
+                    "UPDATE applicants SET google_meet_link=$2, updated_at=NOW() WHERE id=$1",
+                    row["applicant_id"],
+                    meet_link,
+                )
+
+            log_json(
+                logging.INFO,
+                "google_meet.writeback_completed",
+                booking_id=booking_id,
+                booking_update_result=booking_update_result,
+                slot_update_result=slot_update_result,
+                applicant_update_result=applicant_update_result,
+                event_id=event_id,
+                meet_link=meet_link,
+            )
+        else:
+            log_json(
+                logging.ERROR,
+                "google_meet.writeback_skipped",
+                booking_id=booking_id,
+                returncode=result.returncode,
+                stdout_preview=out[:2000],
+                stderr_preview=err[:2000],
+            )
 
         if err:
-            logger.error(f"google_meet subprocess stderr: {err}")
+            log_json(
+                logging.ERROR,
+                "google_meet.subprocess_stderr",
+                booking_id=booking_id,
+                stderr=err,
+            )
+
+        if not meet_link:
+            log_json(
+                logging.ERROR,
+                "google_meet.no_meet_link",
+                booking_id=booking_id,
+                returncode=result.returncode,
+                stdout=out,
+                stderr=err,
+                event_id=event_id,
+                slot_id=str(row["slot_id"]),
+            )
+
+        async with pool.acquire() as conn:
+            verify_row = await conn.fetchrow(
+                """
+                SELECT b.google_meet_link AS booking_meet_link,
+                       b.google_event_id AS booking_event_id,
+                       s.google_meet_link AS slot_meet_link,
+                       s.google_event_id AS slot_event_id
+                FROM bookings b
+                JOIN interview_slots s ON s.id = b.slot_id
+                WHERE b.id=$1
+                """,
+                uuid.UUID(booking_id),
+            )
+
+        if verify_row:
+            log_json(
+                logging.INFO,
+                "meet_link.writeback_check",
+                booking_id=booking_id,
+                booking_meet_link=verify_row["booking_meet_link"],
+                slot_meet_link=verify_row["slot_meet_link"],
+                booking_event_id=verify_row["booking_event_id"],
+                slot_event_id=verify_row["slot_event_id"],
+                parsed_meet_link=meet_link,
+                parsed_event_id=event_id,
+                returncode=result.returncode,
+            )
 
     except asyncio.CancelledError:
         logger.info(f"schedule_google_meet_for_booking cancelled for booking {booking_id}")
@@ -272,6 +373,68 @@ async def schedule_google_meet_for_booking(booking_id: str, delay_seconds: int =
 
     except Exception as e:
         logger.error(f"schedule_google_meet_for_booking error: {str(e)}", exc_info=True)
+
+
+async def inspect_google_meet_link_state(booking_id: str, label: str):
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT b.google_meet_link AS booking_meet_link,
+                       b.google_event_id AS booking_event_id,
+                       s.google_meet_link AS slot_meet_link,
+                       s.google_event_id AS slot_event_id
+                FROM bookings b
+                JOIN interview_slots s ON s.id = b.slot_id
+                WHERE b.id=$1
+                """,
+                uuid.UUID(booking_id),
+            )
+
+        if not row:
+            logger.warning(f"{label}: booking not found {booking_id}")
+            return
+
+        log_json(
+            logging.INFO,
+            "meet_link.state",
+            label=label,
+            booking_id=booking_id,
+            booking_meet_link=row["booking_meet_link"],
+            slot_meet_link=row["slot_meet_link"],
+            booking_event_id=row["booking_event_id"],
+            slot_event_id=row["slot_event_id"],
+        )
+    except Exception:
+        log_json(
+            logging.ERROR,
+            "meet_link.inspect_failed",
+            label=label,
+            booking_id=booking_id,
+        )
+
+
+async def delayed_inspect_google_meet_link_state(booking_id: str, delay_seconds: int, label: str):
+    try:
+        await asyncio.sleep(delay_seconds)
+        await inspect_google_meet_link_state(booking_id, label)
+    except asyncio.CancelledError:
+        log_json(
+            logging.INFO,
+            "meet_link.delayed_inspection_cancelled",
+            label=label,
+            booking_id=booking_id,
+            delay_seconds=delay_seconds,
+        )
+    except Exception:
+        log_json(
+            logging.ERROR,
+            "meet_link.delayed_inspection_failed",
+            label=label,
+            booking_id=booking_id,
+            delay_seconds=delay_seconds,
+        )
 
 # ─────────────────────────────────────────────
 # PAGES
@@ -1328,6 +1491,24 @@ async def create_booking(payload: BookingCreate):
         except Exception:
             logger.exception("Failed to schedule google meet task")
 
+        # 立刻回查一次，確認此刻 DB 尚未帶入的狀態，方便和 30 秒後的結果對照
+        try:
+            await inspect_google_meet_link_state(str(booking_id), "post-create immediate check")
+        except Exception:
+            logger.exception(f"Immediate meet link check failed for booking {booking_id}")
+
+        # 再排一個延遲查核，若 35 秒後仍為空，代表 schedule_google_meet_for_booking 沒有寫回
+        try:
+            asyncio.create_task(
+                delayed_inspect_google_meet_link_state(
+                    str(booking_id),
+                    35,
+                    "post-create delayed check (35s)",
+                )
+            )
+        except Exception:
+            logger.exception(f"Failed to schedule delayed meet link check for booking {booking_id}")
+
         return {"ok": True, "booking_id": str(booking_id)}
 
     except HTTPException:
@@ -1533,62 +1714,63 @@ async def modify_booking(payload: BookingModify):
                     booking_uuid
                 )
 
-                # 如果時段有變動，重新產生取消 token、寄送變動確認信，並重新排程 Google Meet
-                if booking["slot_id"] != slot_uuid:
-                    try:
-                        cancel_token, cancel_expires = generate_cancel_token()
+                # 不論是否變更時段，都重新產生取消 token 並寄送更新確認信；
+                # 若時段變動則額外排程 Google Meet 重建
+                try:
+                    cancel_token, cancel_expires = generate_cancel_token()
 
+                    await conn.execute(
+                        """
+                        UPDATE email_logs
+                        SET cancel_token = NULL,
+                            cancel_token_expires_at = NULL
+                        WHERE booking_id = $1
+                          AND email_type = 'booking_confirm'
+                        """,
+                        booking_uuid,
+                    )
+
+                    await conn.execute(
+                        """
+                        INSERT INTO email_logs
+                        (booking_id, recipient_email, email_type, status,
+                         cancel_token, cancel_token_expires_at)
+                        VALUES ($1, $2, 'booking_confirm', 'pending', $3, $4)
+                        """,
+                        booking_uuid,
+                        payload.email,
+                        cancel_token,
+                        cancel_expires,
+                    )
+
+                    try:
+                        subject_prefix = "面試時間異動確認" if booking["slot_id"] != slot_uuid else "預約資料更新確認"
+                        subject, html = build_confirmation_email(
+                            applicant_name=payload.name,
+                            position_title=position["title"],
+                            slot_date=slot["slot_date"],
+                            start_time=slot["start_time"],
+                            end_time=slot["end_time"],
+                            cancel_token=cancel_token,
+                            subject_prefix=subject_prefix,
+                        )
+                        await _send(to=payload.email, subject=subject, html=html)
                         await conn.execute(
                             """
                             UPDATE email_logs
-                            SET cancel_token = NULL,
-                                cancel_token_expires_at = NULL,
-                                updated_at = NOW()
-                            WHERE booking_id = $1
-                              AND email_type = 'booking_confirm'
+                            SET status='sent',
+                                sent_at=NOW()
+                            WHERE booking_id=$1 AND email_type='booking_confirm'
+                              AND cancel_token=$2
                             """,
                             booking_uuid,
-                        )
-
-                        await conn.execute(
-                            """
-                            INSERT INTO email_logs
-                            (booking_id, recipient_email, email_type, status,
-                             cancel_token, cancel_token_expires_at)
-                            VALUES ($1, $2, 'booking_confirm', 'pending', $3, $4)
-                            """,
-                            booking_uuid,
-                            payload.email,
                             cancel_token,
-                            cancel_expires,
                         )
+                    except Exception:
+                        logger.exception(f"Failed to send update email for booking {booking_uuid}")
 
-                        try:
-                            subject, html = build_confirmation_email(
-                                applicant_name=payload.name,
-                                position_title=position["title"],
-                                slot_date=slot["slot_date"],
-                                start_time=slot["start_time"],
-                                end_time=slot["end_time"],
-                                cancel_token=cancel_token,
-                                subject_prefix="面試時間異動確認",
-                            )
-                            await _send(to=payload.email, subject=subject, html=html)
-                            await conn.execute(
-                                """
-                                UPDATE email_logs
-                                SET status='sent',
-                                    sent_at=NOW(),
-                                    updated_at=NOW()
-                                WHERE booking_id=$1 AND email_type='booking_confirm'
-                                  AND cancel_token=$2
-                                """,
-                                booking_uuid,
-                                cancel_token,
-                            )
-                        except Exception:
-                            logger.exception(f"Failed to send reschedule email for booking {booking_uuid}")
-
+                    # 若時段變動，排程 Google Meet
+                    if booking["slot_id"] != slot_uuid:
                         try:
                             asyncio.create_task(
                                 schedule_google_meet_for_booking(str(booking_uuid), delay_seconds=10)
@@ -1596,8 +1778,8 @@ async def modify_booking(payload: BookingModify):
                         except Exception:
                             logger.exception(f"Failed to reschedule google meet for booking {booking_uuid}")
 
-                    except Exception:
-                        logger.exception(f"Failed to create email log for modified booking {booking_uuid}")
+                except Exception:
+                    logger.exception(f"Failed to create email log for modified booking {booking_uuid}")
 
         return {"ok": True}
 
@@ -1888,7 +2070,7 @@ async def get_bookings(current=Depends(get_current_hr)):
                     s.slot_date,
                     s.start_time,
                     s.end_time,
-                    s.google_meet_link
+                    COALESCE(NULLIF(b.google_meet_link, ''), NULLIF(a.google_meet_link, ''), s.google_meet_link) AS google_meet_link
                 FROM bookings b
                 JOIN applicants a ON a.id = b.applicant_id
                 JOIN job_positions p ON p.id = b.position_id
@@ -2093,7 +2275,7 @@ async def update_booking(
                         raise HTTPException(status_code=400, detail=f"日期或時間格式無效: {str(e)}")
 
                 # 更新 bookings 表
-                if payload.position_id or payload.status:
+                if payload.position_id or payload.status or payload.google_meet_link is not None:
                     updates = []
                     params = []
                     new_status = None
@@ -2114,6 +2296,11 @@ async def update_booking(
                             new_status = normalized_status
                             updates.append(f"status=${len(params)+1}")
                             params.append(normalized_status)
+
+                    if payload.google_meet_link is not None:
+                        normalized_meet_link = payload.google_meet_link.strip() or None
+                        updates.append(f"google_meet_link=${len(params)+1}")
+                        params.append(normalized_meet_link)
 
                     if new_status and new_status != current_status:
                         slot = await conn.fetchrow(

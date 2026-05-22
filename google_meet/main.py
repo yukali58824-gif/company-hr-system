@@ -61,6 +61,14 @@ def schedule_meeting(
 
     event = create_meet_event(calendar, subject, start_dt, end_dt, description, invitees)
     meet_link = event.get("hangoutLink", "")
+    if not meet_link:
+        conference_data = event.get("conferenceData") or {}
+        entry_points = conference_data.get("entryPoints") or []
+        for entry_point in entry_points:
+            uri = entry_point.get("uri")
+            if uri:
+                meet_link = uri
+                break
     print(f"會議建立成功：{meet_link}")
     print(f"行事曆網址：{event['htmlLink']}")
 
@@ -146,8 +154,18 @@ if __name__ == "__main__":
         attendees=attendees,
     )
 
+    meet_link = event.get("hangoutLink", "")
+    if not meet_link:
+        conference_data = event.get("conferenceData") or {}
+        entry_points = conference_data.get("entryPoints") or []
+        for entry_point in entry_points:
+            uri = entry_point.get("uri")
+            if uri:
+                meet_link = uri
+                break
+
     print(f"EVENT_ID:{event.get('id','')}")
-    print(f"MEET_LINK:{event.get('hangoutLink','')}")
+    print(f"MEET_LINK:{meet_link}")
 
 
 
