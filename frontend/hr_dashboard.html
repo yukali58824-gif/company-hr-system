@@ -335,7 +335,7 @@
                     </div>
                     <div class="calendar-grid" id="calendar-grid"></div>
                     <div class="calendar-legend">
-                      <div class="legend-item"><span class="dot dot-slot"></span> 有時段</div>
+                      <div class="legend-item"><span class="dot dot-slot"></span> 空閒</div>
                       <div class="legend-item"><span class="dot dot-booked"></span> 已預約</div>
                     </div>
                   </div>
@@ -401,12 +401,7 @@
                       </select>
                     </div>
                   </div>
-
-                  <div class="form-group">
-                    <label>Google Meet 連結</label>
-                    <input type="url" id="meet-link" placeholder="https://meet.google.com/xxx-xxxx-xxx">
-                  </div>
-
+                  <br>
                   <div class="form-group">
                     <label>備註（選填）</label>
                     <textarea id="slot-notes" rows="4" placeholder="例如：僅限特定職缺預約，或面試官姓名"></textarea>
@@ -548,7 +543,7 @@ function updatePreviewPanel(dateStr) {
           <strong>${s.start_time.substring(0,5)}-${s.end_time.substring(0,5)}</strong>
           ${bookingsList}
           <div style="margin-top: 4px; padding-left: 5px; color: #334155;">
-            💬: <span style="color:#64748b;">${noteText}</span>
+            💬 <span style="color:#64748b;">${noteText}</span>
           </div>
         </div>
       `;
@@ -727,7 +722,6 @@ function renderSlotItem(slot) {
         </div>
         <div style="display:flex; gap:15px; margin-bottom:10px">
             <div style="flex:1"><label>名額</label><input id="edit-capacity-${slot.id}" type="number" value="${slot.max_capacity || 1}" min="1"></div>
-            <div style="flex:2"><label>Meet 連結</label><input id="edit-meet-${slot.id}" type="url" value="${slot.google_meet_link || ''}"></div>
         </div>
         <div style="margin-bottom:15px"><label>備註</label><textarea id="edit-notes-${slot.id}" rows="2">${slot.notes || ''}</textarea></div>
         <div style="display:flex; gap:10px">
