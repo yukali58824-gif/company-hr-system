@@ -146,7 +146,7 @@ def build_confirmation_email(
             </table>
             <p style="margin-top:24px;">如需取消預約，請點擊下方按鈕：</p>
             <p>
-                <a href="{cancel_url}"
+                <a href="https://forms.gle/iuzrhmWH7XrzZSbX6"
                      style="display:inline-block;padding:10px 24px;background:#ef4444;
                                     color:#fff;border-radius:6px;text-decoration:none;font-weight:bold;">
                     取消預約
@@ -161,7 +161,7 @@ def build_confirmation_email(
 
 async def delete_old_google_event(event_id: str, sender_email: str = None):
     """
-    刪除舊的 Google Calendar 事件
+    刪除舊的 Google Calendar 事件（不通知參與者）
     
     Args:
         event_id: 要刪除的事件 ID
@@ -173,7 +173,7 @@ async def delete_old_google_event(event_id: str, sender_email: str = None):
     try:
         sender_email = sender_email or os.environ.get("GOOGLE_MEET_SENDER_EMAIL", "yukali58822@gmail.com")
         calendar = get_calendar_service(login_email=sender_email)
-        delete_event(calendar, event_id, send_updates="all")
+        delete_event(calendar, event_id, send_updates="none")  # 不通知參與者
         log_json(
             logging.INFO,
             "old_event.deleted",
@@ -185,6 +185,71 @@ async def delete_old_google_event(event_id: str, sender_email: str = None):
             logging.WARNING,
             "old_event.delete_failed",
             event_id=event_id,
+            error=str(e),
+        )
+
+async def send_event_cancellation_notification(
+    applicant_name: str,
+    applicant_email: str,
+    position_title: str,
+    slot_date,
+    start_time,
+    end_time,
+    sender_email: str = None
+):
+    """
+    寄送行程刪除通知給應徵者
+    
+    Args:
+        applicant_name: 應徵者名字
+        applicant_email: 應徵者 Email
+        position_title: 職位名稱
+        slot_date: 面試日期
+        start_time: 開始時間
+        end_time: 結束時間
+        sender_email: 發起者 Email（發件人）
+    """
+    try:
+        sender_email = sender_email or os.environ.get("GOOGLE_MEET_SENDER_EMAIL", "yukali58822@gmail.com")
+        
+        date_str = slot_date.strftime("%Y-%m-%d") if slot_date else ""
+        start_str = start_time.strftime("%H:%M") if start_time else ""
+        end_str = end_time.strftime("%H:%M") if end_time else ""
+        
+        subject = f"【面試行程取消】{applicant_name} — {date_str} {start_str}"
+        html = f"""
+        <div style="font-family:sans-serif;max-width:560px;margin:auto;color:#333;">
+            <h2 style="color:#ef4444;">面試行程已取消</h2>
+            <p>親愛的 <b>{applicant_name}</b>，</p>
+            <p>很抱歉通知您，您的面試行程已被取消。詳細資訊如下：</p>
+            <table style="border-collapse:collapse;width:100%;margin:16px 0;">
+                <tr><td style="padding:8px;border:1px solid #e5e7eb;background:#f9fafb;width:30%;">應徵職缺</td>
+                        <td style="padding:8px;border:1px solid #e5e7eb;">{position_title}</td></tr>
+                <tr><td style="padding:8px;border:1px solid #e5e7eb;background:#f9fafb;">原定日期</td>
+                        <td style="padding:8px;border:1px solid #e5e7eb;">{date_str}</td></tr>
+                <tr><td style="padding:8px;border:1px solid #e5e7eb;background:#f9fafb;">原定時間</td>
+                        <td style="padding:8px;border:1px solid #e5e7eb;">{start_str} – {end_str}</td></tr>
+            </table>
+            <p style="margin-top:24px;">若您有任何問題，歡迎在 104 留下訊息，或直接來電 0906-205-353。</p>
+            <p style="color:#6b7280;font-size:13px;margin-top:32px;">
+                感謝您的理解！
+            </p>
+        </div>
+        """
+        
+        await _send(to=applicant_email, subject=subject, html=html)
+        log_json(
+            logging.INFO,
+            "event_cancellation.email_sent",
+            applicant_email=applicant_email,
+            applicant_name=applicant_name,
+        )
+    except Exception as e:
+        log_json(
+            logging.WARNING,
+            "event_cancellation.email_failed",
+            applicant_email=applicant_email,
+            applicant_name=applicant_name,
             error=str(e),
         )
 
@@ -1908,11 +1973,17 @@ async def cancel_existing_booking(payload: CancelBookingRequest):
                     SELECT
                         b.id,
                         b.slot_id,
+                        b.google_event_id,
+                        a.name AS applicant_name,
+                        a.email AS applicant_email,
+                        p.title AS position_title,
+                        s.slot_date, s.start_time, s.end_time,
                         s.booked_count,
                         s.max_capacity,
                         s.status
                     FROM bookings b
                     JOIN applicants a ON a.id = b.applicant_id
+                    JOIN job_positions p ON p.id = b.position_id
                     JOIN interview_slots s ON s.id = b.slot_id
                     WHERE LOWER(a.email)=LOWER($1)
                       AND b.status='confirmed'
@@ -1926,12 +1997,17 @@ async def cancel_existing_booking(payload: CancelBookingRequest):
                     raise HTTPException(status_code=404, detail="找不到可取消的預約")
 
                 for booking in bookings:
+                    # 刪除 Google Calendar 事件
+                    if booking.get("google_event_id"):
+                        await delete_old_google_event(booking["google_event_id"])
+
                     await conn.execute(
                         """
                         UPDATE bookings
                         SET status='cancelled',
                             cancelled_by='applicant',
-                            cancelled_at=NOW()
+                            cancelled_at=NOW(),
+                            google_event_id=NULL
                         WHERE id=$1
                         """,
                         booking["id"]
@@ -1956,6 +2032,20 @@ async def cancel_existing_booking(payload: CancelBookingRequest):
                     )
 
                     await log_slot_count_change(conn, booking["slot_id"], booking["booked_count"], new_booked_count, "booking cancelled")
+                
+                # 交易外發送取消通知（避免超時）
+                for booking in bookings:
+                    try:
+                        await send_event_cancellation_notification(
+                            applicant_name=booking["applicant_name"],
+                            applicant_email=booking["applicant_email"],
+                            position_title=booking["position_title"],
+                            slot_date=booking["slot_date"],
+                            start_time=booking["start_time"],
+                            end_time=booking["end_time"],
+                        )
+                    except Exception:
+                        logger.exception(f"Failed to send cancellation notification for {booking['applicant_email']}")
 
         return {"ok": True}
 
@@ -1986,9 +2076,16 @@ async def cancel_booking(payload: CancelTokenRequest):
                         el.cancel_token_expires_at,
                         el.cancel_token_used_at,
                         b.id AS booking_id_check,
-                        b.status AS booking_status
+                        b.status AS booking_status,
+                        b.google_event_id,
+                        a.name AS applicant_name,
+                        p.title AS position_title,
+                        s.slot_date, s.start_time, s.end_time
                     FROM email_logs el
                     JOIN bookings b ON b.id = el.booking_id
+                    JOIN applicants a ON a.id = b.applicant_id
+                    JOIN job_positions p ON p.id = b.position_id
+                    JOIN interview_slots s ON s.id = b.slot_id
                     WHERE el.cancel_token=$1 
                       AND el.cancel_token IS NOT NULL
                     """,
@@ -2022,13 +2119,18 @@ async def cancel_booking(payload: CancelTokenRequest):
                     booking_id
                 )
 
+                # 刪除 Google Calendar 事件
+                if email_log.get("google_event_id"):
+                    await delete_old_google_event(email_log["google_event_id"])
+
                 # 更新預約狀態為 cancelled（不soft delete，保留在列表中）
                 await conn.execute(
                     """
                     UPDATE bookings
                     SET status='cancelled',
                         cancelled_by='applicant',
-                        cancelled_at=NOW()
+                        cancelled_at=NOW(),
+                        google_event_id=NULL
                     WHERE id=$1
                     """,
                     booking_id
@@ -2075,6 +2177,19 @@ async def cancel_booking(payload: CancelTokenRequest):
                     )
 
                     await log_slot_count_change(conn, booking["slot_id"], slot["booked_count"], new_booked_count, "booking cancelled")
+        
+        # 發送取消確認郵件給應徵者（交易外執行以避免超時）
+        try:
+            await send_event_cancellation_notification(
+                applicant_name=email_log["applicant_name"],
+                applicant_email=email_log["recipient_email"],
+                position_title=email_log["position_title"],
+                slot_date=email_log["slot_date"],
+                start_time=email_log["start_time"],
+                end_time=email_log["end_time"],
+            )
+        except Exception:
+            logger.exception(f"Failed to send cancellation notification")
         
         return {"ok": True, "status": "cancelled"}
 
@@ -2493,9 +2608,18 @@ async def delete_booking(
             async with conn.transaction():
                 booking = await conn.fetchrow(
                     """
-                    SELECT slot_id
-                    FROM bookings
-                    WHERE id=$1 AND deleted_at IS NULL
+                    SELECT b.slot_id, 
+                           b.google_event_id, 
+                           b.position_id,
+                           a.name AS applicant_name,
+                           a.email AS applicant_email,
+                           p.title AS position_title,
+                           s.slot_date, s.start_time, s.end_time
+                    FROM bookings b
+                    JOIN applicants a ON a.id = b.applicant_id
+                    JOIN job_positions p ON p.id = b.position_id
+                    JOIN interview_slots s ON s.id = b.slot_id
+                    WHERE b.id=$1 AND b.deleted_at IS NULL
                     """,
                     uuid.UUID(booking_id)
                 )
@@ -2512,6 +2636,10 @@ async def delete_booking(
                     booking["slot_id"]
                 )
 
+                # 刪除 Google Calendar 事件
+                if booking.get("google_event_id"):
+                    await delete_old_google_event(booking["google_event_id"])
+
                 await conn.execute(
                     """
                     UPDATE bookings
@@ -2519,7 +2647,8 @@ async def delete_booking(
                         cancelled_by='hr',
                         cancelled_at=NOW(),
                         deleted_at=NOW(),
-                        deleted_by=$2
+                        deleted_by=$2,
+                        google_event_id=NULL
                     WHERE id=$1
                     """,
                     uuid.UUID(booking_id),
@@ -2546,6 +2675,19 @@ async def delete_booking(
                     )
 
                     await log_slot_count_change(conn, booking["slot_id"], slot["booked_count"], new_booked_count, "booking deleted by hr")
+        
+        # 發送取消通知給應徵者（交易外執行以避免超時）
+        try:
+            await send_event_cancellation_notification(
+                applicant_name=booking["applicant_name"],
+                applicant_email=booking["applicant_email"],
+                position_title=booking["position_title"],
+                slot_date=booking["slot_date"],
+                start_time=booking["start_time"],
+                end_time=booking["end_time"],
+            )
+        except Exception:
+            logger.exception(f"Failed to send cancellation email for booking {booking_id}")
 
         return {"ok": True}
 
