@@ -125,7 +125,7 @@ def build_confirmation_email(
         subject_prefix: str = "面試預約確認",
 ) -> tuple[str, str]:
         """組裝確認信 subject 與 HTML body，回傳 (subject, html)。"""
-        cancel_url = f"{BASE_URL}/cancel?t={cancel_token}"
+        cancel_url = "https://forms.gle/iuzrhmWH7XrzZSbX6"
         date_str = slot_date.strftime("%Y-%m-%d") if slot_date else ""
         start_str = start_time.strftime("%H:%M") if start_time else ""
         end_str = end_time.strftime("%H:%M") if end_time else ""
@@ -134,7 +134,7 @@ def build_confirmation_email(
         html = f"""
         <div style="font-family:sans-serif;max-width:560px;margin:auto;color:#333;">
             <h2 style="color:#2563eb;">{subject_prefix}</h2>
-            <p>您好，<b>{applicant_name}</b>，</p>
+            <p><b>{applicant_name}</b>，</p>
             <p>您的面試預約已成功確認，詳細資訊如下：</p>
             <table style="border-collapse:collapse;width:100%;margin:16px 0;">
                 <tr><td style="padding:8px;border:1px solid #e5e7eb;background:#f9fafb;width:30%;">應徵職缺</td>
@@ -144,7 +144,7 @@ def build_confirmation_email(
                 <tr><td style="padding:8px;border:1px solid #e5e7eb;background:#f9fafb;">面試時間</td>
                         <td style="padding:8px;border:1px solid #e5e7eb;">{start_str} – {end_str}</td></tr>
             </table>
-            <p style="margin-top:24px;">如需取消預約，請點擊下方按鈕（連結 7 天內有效）：</p>
+            <p style="margin-top:24px;">如需取消預約，請點擊下方按鈕：</p>
             <p>
                 <a href="{cancel_url}"
                      style="display:inline-block;padding:10px 24px;background:#ef4444;
@@ -1123,7 +1123,7 @@ async def close_slot(
             uuid.UUID(slot_id),
             uuid.UUID(current["id"])
         )
-        
+         
         return {"ok": True}
     
     except Exception as e:
