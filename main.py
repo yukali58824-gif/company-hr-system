@@ -1010,6 +1010,39 @@ async def update_slot(
         logger.error(f"Update slot error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="編輯時段失敗")
 
+@app.get("/api/slots/{slot_id}/bookings")
+async def get_slot_bookings(
+    slot_id: str,
+    current=Depends(get_current_hr)
+):
+    """取得特定面試時段的所有預約（包括應徵者名字和職務）"""
+    try:
+        pool = await get_pool()
+        
+        bookings = await pool.fetch(
+            """
+            SELECT
+                b.id,
+                a.name AS applicant_name,
+                p.title AS position_title,
+                b.status,
+                b.booked_at
+            FROM bookings b
+            JOIN applicants a ON a.id = b.applicant_id
+            JOIN job_positions p ON p.id = b.position_id
+            WHERE b.slot_id = $1
+              AND b.deleted_at IS NULL
+            ORDER BY b.booked_at ASC
+            """,
+            uuid.UUID(slot_id)
+        )
+        
+        return [dict(row) for row in bookings]
+    
+    except Exception as e:
+        logger.error(f"Get slot bookings error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="取得預約失敗")
+
 @app.delete("/api/slots/{slot_id}")
 async def delete_slot(
     slot_id: str,

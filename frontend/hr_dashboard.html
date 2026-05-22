@@ -522,22 +522,38 @@ function updatePreviewPanel(dateStr) {
     return;
   }
   
-  contentEl.innerHTML = daySlots.map(s => {
-    const isBooked = s.booked_count > 0;
-    const badgeClass = isBooked ? 'tag-red' : 'tag-green';
-    const badgeText = isBooked ? '已預約' : '空閒中';
-    const noteText = s.notes ? s.notes : "無備註";
-    
-    return `
-      <div class="preview-item-row" style="text-align: left;">
-        <span class="preview-tag ${badgeClass}">${badgeText}</span>
-        <strong>${s.start_time.substring(0,5)}-${s.end_time.substring(0,5)}</strong>
-        <div style="margin-top: 4px; padding-left: 5px; color: #334155;">
-          💬 備註內容: <span style="color:#64748b;">${noteText}</span>
+  // 取得該日期所有時段的預約信息
+  Promise.all(daySlots.map(s => 
+    fetch(`/api/slots/${s.id}/bookings`)
+      .then(r => r.ok ? r.json() : [])
+      .catch(() => [])
+  )).then(allBookingsArray => {
+    contentEl.innerHTML = daySlots.map((s, idx) => {
+      const bookings = allBookingsArray[idx] || [];
+      const isBooked = bookings.length > 0;
+      const badgeClass = isBooked ? 'tag-red' : 'tag-green';
+      const badgeText = isBooked ? '已預約' : '空閒中';
+      const noteText = s.notes ? s.notes : "無";
+      
+      // 顯示該時段的所有預約者
+      const bookingsList = bookings.length > 0 
+        ? `<div style="margin-top: 4px; font-size: 11px; color: #475569; border-left: 2px solid #cbd5e1; padding-left: 6px;">
+             ${bookings.map(b => `<div style="padding: 2px 0;">👤 ${b.applicant_name} - ${b.position_title}</div>`).join('')}
+           </div>`
+        : '';
+      
+      return `
+        <div class="preview-item-row" style="text-align: left;">
+          <span class="preview-tag ${badgeClass}">${badgeText}</span>
+          <strong>${s.start_time.substring(0,5)}-${s.end_time.substring(0,5)}</strong>
+          <div style="margin-top: 4px; padding-left: 5px; color: #334155;">
+            💬: <span style="color:#64748b;">${noteText}</span>
+          </div>
+          ${bookingsList}
         </div>
-      </div>
-    `;
-  }).join('');
+      `;
+    }).join('');
+  });
 }
 
 async function fetchCalendarStatus() {
