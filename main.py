@@ -23,6 +23,7 @@ from io import BytesIO
 from backend.auth import get_current_hr, verify_password, create_access_token, decode_token, SECRET_KEY
 from backend.database import get_pool
 from backend.email_utils import generate_cancel_token, _send, BASE_URL
+from google_meet.calendar_delete import get_calendar_service, delete_event
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +158,35 @@ def build_confirmation_email(
         </div>
         """
         return subject, html
+
+async def delete_old_google_event(event_id: str, sender_email: str = None):
+    """
+    刪除舊的 Google Calendar 事件
+    
+    Args:
+        event_id: 要刪除的事件 ID
+        sender_email: Google 帳號 Email（預設從環境變數取得）
+    """
+    if not event_id:
+        return
+    
+    try:
+        sender_email = sender_email or os.environ.get("GOOGLE_MEET_SENDER_EMAIL", "yukali58822@gmail.com")
+        calendar = get_calendar_service(login_email=sender_email)
+        delete_event(calendar, event_id, send_updates="all")
+        log_json(
+            logging.INFO,
+            "old_event.deleted",
+            event_id=event_id,
+            sender_email=sender_email,
+        )
+    except Exception as e:
+        log_json(
+            logging.WARNING,
+            "old_event.delete_failed",
+            event_id=event_id,
+            error=str(e),
+        )
 
 async def complete_expired_confirmed_bookings(conn):
         await conn.execute(
@@ -918,6 +948,7 @@ async def update_slot(
                 affected_bookings = await conn.fetch(
                     """
                     SELECT b.id AS booking_id,
+                           b.google_event_id,
                            a.email AS applicant_email,
                            a.name AS applicant_name,
                            p.title AS position_title,
@@ -936,6 +967,10 @@ async def update_slot(
                 for bk in affected_bookings:
                     booking_id = bk["booking_id"]
                     recipient_email = bk["applicant_email"]
+
+                    # 刪除舊的 Google Meet 事件
+                    if bk.get("google_event_id"):
+                        await delete_old_google_event(bk["google_event_id"])
 
                     cancel_token, cancel_expires = generate_cancel_token()
 
@@ -964,6 +999,12 @@ async def update_slot(
                         cancel_expires,
                     )
 
+                    # 清除舊的 Google Meet 相關欄位
+                    await conn.execute(
+                        "UPDATE bookings SET google_event_id=NULL WHERE id=$1",
+                        booking_id,
+                    )
+
                     try:
                         subject, html = build_confirmation_email(
                             applicant_name=bk["applicant_name"],
@@ -990,15 +1031,6 @@ async def update_slot(
                     except Exception:
                         logger.exception(
                             f"Failed to send reschedule email for booking {booking_id}"
-                        )
-
-                    try:
-                        asyncio.create_task(
-                            schedule_google_meet_for_booking(str(booking_id), delay_seconds=10)
-                        )
-                    except Exception:
-                        logger.exception(
-                            f"Failed to reschedule google meet for booking {booking_id}"
                         )
 
         return {"ok": True}
@@ -1572,7 +1604,7 @@ async def modify_booking(payload: BookingModify):
                 await complete_expired_confirmed_bookings(conn)
                 booking = await conn.fetchrow(
                     """
-                    SELECT b.id, b.slot_id, b.position_id, b.status, b.deleted_at, a.id AS applicant_id
+                    SELECT b.id, b.slot_id, b.position_id, b.status, b.deleted_at, b.google_event_id, a.id AS applicant_id
                     FROM bookings b
                     JOIN applicants a ON a.id = b.applicant_id
                     WHERE b.id=$1
@@ -1654,6 +1686,10 @@ async def modify_booking(payload: BookingModify):
                         )
 
                 if booking["slot_id"] != slot_uuid:
+                    # 刪除舊的 Google Calendar 事件
+                    if booking.get("google_event_id"):
+                        await delete_old_google_event(booking["google_event_id"])
+                    
                     old_slot = await conn.fetchrow(
                         """
                         SELECT id, booked_count, max_capacity, status
@@ -2242,9 +2278,11 @@ async def update_booking(
 
         async with pool.acquire() as conn:
             async with conn.transaction():
-                # 獲取 booking 的 applicant_id、slot_id、status
+                time_updated = False  # 追踪時間是否被更新
+                
+                # 獲取 booking 的 applicant_id、slot_id、status、google_event_id
                 booking = await conn.fetchrow(
-                    "SELECT applicant_id, slot_id, status FROM bookings WHERE id=$1 AND deleted_at IS NULL",
+                    "SELECT applicant_id, slot_id, status, google_event_id FROM bookings WHERE id=$1 AND deleted_at IS NULL",
                     booking_uuid
                 )
                 if not booking:
@@ -2277,6 +2315,12 @@ async def update_booking(
 
                 # 更新 interview_slots 表（如果提供了時間）
                 if payload.slot_date or payload.start_time or payload.end_time:
+                    time_updated = True  # 標記時間已被更新
+                    
+                    # 時間被更改，刪除舊的 Google Calendar 事件
+                    if booking.get("google_event_id"):
+                        await delete_old_google_event(booking["google_event_id"])
+                    
                     updates = []
                     params = []
 
@@ -2308,10 +2352,19 @@ async def update_booking(
                         raise HTTPException(status_code=400, detail=f"日期或時間格式無效: {str(e)}")
 
                 # 更新 bookings 表
-                if payload.position_id or payload.status or payload.google_meet_link is not None:
+                bookings_needs_update = (
+                    payload.position_id or 
+                    payload.status or 
+                    payload.google_meet_link is not None or 
+                    time_updated
+                )
+                
+                if bookings_needs_update:
                     updates = []
                     params = []
                     new_status = None
+                    has_google_meet_link_update = False
+                    
                     if payload.position_id:
                         try:
                             pos_uuid = uuid.UUID(payload.position_id)
@@ -2319,6 +2372,7 @@ async def update_booking(
                             params.append(pos_uuid)
                         except ValueError:
                             raise HTTPException(status_code=400, detail="職缺 ID 格式無效")
+                    
                     if payload.status:
                         normalized_status = payload.status.strip().lower()
                         if not normalized_status:
@@ -2334,6 +2388,13 @@ async def update_booking(
                         normalized_meet_link = payload.google_meet_link.strip() or None
                         updates.append(f"google_meet_link=${len(params)+1}")
                         params.append(normalized_meet_link)
+                        has_google_meet_link_update = True
+
+                    # 如果時間被更新，清除舊的 Google Meet 相關欄位（如果還沒有更新過）
+                    if time_updated:
+                        updates.append("google_event_id=NULL")
+                        if not has_google_meet_link_update:
+                            updates.append("google_meet_link=NULL")
 
                     if new_status and new_status != current_status:
                         slot = await conn.fetchrow(
@@ -2389,6 +2450,27 @@ async def update_booking(
                             f"UPDATE bookings SET {','.join(updates)} WHERE id=${len(params)}",
                             *params
                         )
+            
+            # 如果時間被更新且預約是 confirmed 狀態，重新排程新的 Google Meet
+            if time_updated and current_status == 'confirmed':
+                try:
+                    log_json(
+                        logging.INFO,
+                        "schedule_google_meet.triggered",
+                        booking_id=str(booking_uuid),
+                        reason="time_updated",
+                    )
+                    asyncio.create_task(
+                        schedule_google_meet_for_booking(str(booking_uuid), delay_seconds=5)
+                    )
+                except Exception as e:
+                    logger.exception(f"Failed to reschedule google meet for booking {booking_uuid}")
+                    log_json(
+                        logging.ERROR,
+                        "schedule_google_meet.failed",
+                        booking_id=str(booking_uuid),
+                        error=str(e),
+                    )
 
         return {"ok": True}
     

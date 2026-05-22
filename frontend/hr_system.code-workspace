@@ -1,0 +1,15 @@
+{
+	"folders": [
+		{
+			"name": "hr_system",
+			"path": ".."
+		},
+		{
+			"name": "google_meet",
+			"path": "../../../Desktop/google_meet"
+		}
+	],
+	"settings": {
+		"python-envs.defaultEnvManager": "ms-python.python:venv"
+	}
+}
