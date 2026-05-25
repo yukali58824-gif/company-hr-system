@@ -130,10 +130,14 @@
       letter-spacing: 0.5px;
       box-shadow: 0 4px 12px rgba(232, 150, 26, 0.25);
       transition: all 0.2s ease;
+      margin-bottom: 12px;
     }
     .btn:hover {
       background: linear-gradient(135deg, #f5a623, #e8961a);
       box-shadow: 0 6px 16px rgba(232, 150, 26, 0.35);
+    }
+    .btn:last-of-type {
+      margin-bottom: 0;
     }
     .cancel-btn {
       display: block;
@@ -203,6 +207,7 @@
       請準時加入下方<br>Google Meet 會議室：
     </p>
     {{meet_button}}
+    {{calendar_button}}
     {{cancel_section}}
   </div>
 

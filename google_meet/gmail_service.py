@@ -78,6 +78,13 @@ def build_email_html(
     if meet_link:
         meet_button = f'<a href="{meet_link}" class="btn" target="_blank">加入 Google Meet 會議</a>'
 
+    # Google 日曆按鈕（用於快速添加到日曆）
+    calendar_button = ""
+    if start_dt:
+        # 使用 Google Calendar 的快速添加功能
+        calendar_url = f"https://calendar.google.com/calendar/u/0/r/eventedit?text={subject}&dates={start_dt.strftime('%Y%m%dT%H%M%S')}/{end_dt.strftime('%Y%m%dT%H%M%S')}&details={meet_link}"
+        calendar_button = f'<a href="{calendar_url}" class="btn" style="background: linear-gradient(135deg, #4285f4, #1f7ae0);" target="_blank" title="添加到 Google 日曆">➕ 加入 Google 日曆</a>'
+
     cancel_section = cancel_section or ""
     variables = {
         "recipient_name":    recipient_name,
@@ -88,6 +95,7 @@ def build_email_html(
         "duration":          int((end_dt - start_dt).seconds / 60),
         "meet_link":         meet_link,
         "meet_button":       meet_button,
+        "calendar_button":   calendar_button,
         "description_block": description_block,
         "organizer_email":   organizer_email,
         "attendee_rows":     attendee_rows,

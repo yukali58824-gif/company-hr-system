@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 
-def create_meet_event(calendar, subject, start_dt, end_dt, description="", attendees=None):
+def create_meet_event(calendar, subject, start_dt, end_dt, description="", attendees=None, organizer_email=None):
     """建立含 Google Meet 連結的行事曆事件
     
     Args:
@@ -11,6 +11,7 @@ def create_meet_event(calendar, subject, start_dt, end_dt, description="", atten
         end_dt: 結束時間（含時區）
         description: 會議說明
         attendees: 與會者列表，每個項目應包含 "email" 和 "name" 鍵
+        organizer_email: 發起者的 Email（會自動被設為 organizer）
     
     Returns:
         建立的行事曆事件對象，包含 hangoutLink（Google Meet 連結）
@@ -42,15 +43,23 @@ def create_meet_event(calendar, subject, start_dt, end_dt, description="", atten
             for a in attendees 
             if a.get("email")
         ]
+    
+    # 明確設定發起者的 Email（確保發起者被正確識別）
+    if organizer_email:
+        event["organizer"] = {
+            "email": organizer_email,
+            "displayName": "會議主辦人"
+        }
 
     # 使用 sendUpdates='all' 讓 Google Calendar 自動發送邀請給所有參與者
     # 這樣可以確保：
     # 1. 所有參與者都收到 Google Calendar 邀請
     # 2. 他們可以直接在 Google Calendar 中接受/拒絕
-    # 3. 但我們也會通過 Gmail API 發送 HTML + iCal 郵件以獲得更好的用戶體驗
+    # 3. 事件自動添加到發起者的 Google 日曆（calendarId="primary"）
+    # 4. 發起者也會收到參與者的回覆通知
     return calendar.events().insert(
         calendarId="primary",
         body=event,
         conferenceDataVersion=1,
-        sendUpdates="all",  # 發送邀請給所有參與者
+        sendUpdates="all",  # 發送邀請給所有參與者，且通知發起者
     ).execute()

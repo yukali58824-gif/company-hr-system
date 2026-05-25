@@ -82,7 +82,8 @@ def schedule_meeting(
     if attendees:
         invitees.extend(attendees)
 
-    event = create_meet_event(calendar, subject, start_dt, end_dt, description, invitees)
+    # 建立 Google Calendar 事件，並明確指定發起者（將自動匯入發起者的 Google 日曆）
+    event = create_meet_event(calendar, subject, start_dt, end_dt, description, invitees, organizer_email=login_email)
     meet_link = event.get("hangoutLink", "")
     if not meet_link:
         conference_data = event.get("conferenceData") or {}

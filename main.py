@@ -619,6 +619,31 @@ async def schedule_google_meet_for_booking(booking_id: str, delay_seconds: int =
                             )
                         except Exception as e:
                             logger.warning(f"Failed to log email for interviewer {interviewer['email']}: {e}")
+            
+            # 記錄發起者/HR 的 Google Calendar 邀請（作為 organizer 自動接收）
+            sender_email = os.environ.get("GOOGLE_MEET_SENDER_EMAIL", "yukali58822@gmail.com")
+            async with pool.acquire() as conn:
+                try:
+                    await conn.execute(
+                        "INSERT INTO email_logs (booking_id, recipient_email, email_type, status) VALUES ($1, $2, $3, $4)",
+                        uuid.UUID(booking_id),
+                        sender_email,
+                        'organizer_notify',
+                        'sent',  # Google Calendar API 自動作為 organizer 接收
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to log email for organizer {sender_email}: {e}")
+            
+            # 記錄發起者的 Google 日曆自動匯入
+            log_json(
+                logging.INFO,
+                "organizer_calendar.auto_imported",
+                booking_id=booking_id,
+                organizer_email=sender_email,
+                event_id=event_id,
+                meet_link=meet_link,
+                message="Google Calendar 事件已自動匯入發起者的日曆",
+            )
         except Exception:
             logger.exception(f"Failed to send booking confirmation email for booking {booking_id}")
 
