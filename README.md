@@ -106,3 +106,11 @@ hr_system/
     └── static/css/
         └── style.css
 ```
+
+📌 Google 認證步驟
+# 進入 google_meet 目錄
+cd c:\Users\PC02\Downloads\hr_system\google_meet
+
+# 執行認證腳本
+python authenticate.py
+這將打開瀏覽器進行 Google OAuth2 認證，完成後會生成 token.json 文件。
