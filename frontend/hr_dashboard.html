@@ -405,7 +405,7 @@
                   <div class="form-group">
                     <label>備註（選填）</label>
                     <textarea id="slot-notes" rows="4" placeholder="例如：僅限特定職缺預約，或面試官姓名"></textarea>
-                  </div>
+                  </div
                   <div class="slot-submit-wrap" style="display:flex; justify-content:center;">
                     <button type="submit" class="btn-primary">建立</button>
                   </div>
@@ -755,7 +755,6 @@ async function saveSlot(id) {
     start_time: document.getElementById(`edit-start-${id}`).value,
     end_time: document.getElementById(`edit-end-${id}`).value,
     max_capacity: document.getElementById(`edit-capacity-${id}`).value,
-    google_meet_link: document.getElementById(`edit-meet-${id}`).value,
     notes: document.getElementById(`edit-notes-${id}`).value
   };
   await fetch(`/api/slots/${id}`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
@@ -812,7 +811,6 @@ document.getElementById('slot-form').onsubmit = async (e) => {
     start_time: startTime,
     end_time: calculatedEnd, 
     max_capacity: document.getElementById('capacity').value,
-    google_meet_link: document.getElementById('meet-link').value,
     notes: document.getElementById('slot-notes').value
   };
   
