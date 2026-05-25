@@ -52,8 +52,7 @@ def build_email_html(
     # 職缺資訊區塊
     job_title_block = ""
     if job_title:
-        job_title_block = f"""
-        <div class=\"info-row\">\n          <div class=\"label\">應徵職缺</div>\n          <div class=\"content-text\">{job_title}</div>\n        </div>"""
+        job_title_block = f'<div class="info-row"><div class="label">應徵職缺</div><div class="content-text">{job_title}</div></div>'
 
     # 應徵者聯絡資訊區塊
     applicant_info_block = ""
@@ -63,19 +62,21 @@ def build_email_html(
             info_items.append(applicant_email)
         if applicant_phone:
             info_items.append(applicant_phone)
-        applicant_info_block = f"""
-        <div class=\"info-row\">\n          <div class=\"label\">應徵者</div>\n          <div class=\"content-text\">{' · '.join(info_items)}</div>\n        </div>"""
+        applicant_info_block = f'<div class="info-row"><div class="label">應徵者</div><div class="content-text">{" · ".join(info_items)}</div></div>'
 
     attendee_section = ""
     if attendee_rows:
-        attendee_section = f"""
-        <div class=\"info-row\">\n          <div class=\"label\">參與人員</div>\n          <div class=\"content-text\"><ul>{attendee_rows}</ul></div>\n        </div>"""
+        attendee_section = f'<div class="info-row"><div class="label">參與人員</div><div class="content-text"><ul>{attendee_rows}</ul></div></div>'
 
     # 說明區塊（選填）
     description_block = ""
     if description:
-        description_block = f"""
-        <div class=\"info-row\">\n          <div><div class=\"label\">說明</div>{description}</div>\n        </div>"""
+        description_block = f'<div class="info-row"><div class="label">說明</div><div class="content-text">{description}</div></div>'
+
+    # Google Meet 按鈕
+    meet_button = ""
+    if meet_link:
+        meet_button = f'<a href="{meet_link}" class="btn" target="_blank">加入 Google Meet 會議</a>'
 
     cancel_section = cancel_section or ""
     variables = {
@@ -86,6 +87,7 @@ def build_email_html(
         "end_str":           end_dt.strftime("%H:%M"),
         "duration":          int((end_dt - start_dt).seconds / 60),
         "meet_link":         meet_link,
+        "meet_button":       meet_button,
         "description_block": description_block,
         "organizer_email":   organizer_email,
         "attendee_rows":     attendee_rows,
@@ -156,11 +158,16 @@ def send_simple_email(
     """寄送純 HTML 郵件（無日歷邀請）"""
     msg = MIMEMultipart("alternative")
     msg["Subject"] = f"面試邀請：{subject}"
-    msg["From"] = sender
+    msg["From"] = f"Interview Platform <{sender}>"
     msg["To"] = recipient_email
 
-    msg.attach(MIMEText("您有一封新的面試邀請。", "plain", "utf-8"))
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
+    part1 = MIMEText("您有一封新的面試邀請。", "plain", "utf-8")
+    part1.replace_header("Content-Transfer-Encoding", "8bit")
+    msg.attach(part1)
+    
+    part2 = MIMEText(html_body, "html", "utf-8")
+    part2.replace_header("Content-Transfer-Encoding", "8bit")
+    msg.attach(part2)
 
     raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
     gmail.users().messages().send(userId="me", body={"raw": raw}).execute()
@@ -177,13 +184,18 @@ def send_calendar_invite(
     """寄送合併 HTML 與 iCal 的會議邀請"""
     msg = MIMEMultipart("mixed")
     msg["Subject"] = f"會議邀請：{subject}"
-    msg["From"] = sender
+    msg["From"] = f"Interview Platform <{sender}>"
     msg["To"] = recipient_email
     msg["Content-class"] = "urn:content-classes:calendarmessage"
 
     alternative = MIMEMultipart("alternative")
-    alternative.attach(MIMEText("您有一封新的會議邀請。", "plain", "utf-8"))
-    alternative.attach(MIMEText(html_body, "html", "utf-8"))
+    part1 = MIMEText("您有一封新的會議邀請。", "plain", "utf-8")
+    part1.replace_header("Content-Transfer-Encoding", "8bit")
+    alternative.attach(part1)
+    
+    part2 = MIMEText(html_body, "html", "utf-8")
+    part2.replace_header("Content-Transfer-Encoding", "8bit")
+    alternative.attach(part2)
     msg.attach(alternative)
 
     ics_part = MIMEText(ical_body, "calendar", "utf-8")
@@ -211,20 +223,18 @@ def send_to_applicant(
     google_form_url: str,
     job_title: str = "",
     applicant_phone: str = "",
-    # 不加入 Calendar
 ) -> dict:
-    """寄送純郵件給應聘者（含取消按鈕與 Google 表單）"""
+    """寄送 Google Calendar 邀請給應聘者（含完整郵件說明與取消按鈕）"""
     email = applicant["email"]
     name = applicant.get("name") or email.split("@")[0]
     role = applicant.get("role", "應聘者")
 
     cancel_button_html = ""
     if google_form_url:
-        cancel_button_html = f"""
-    <a href=\"{google_form_url}\" class=\"cancel-btn\">取消預約</a>
-    """
+        cancel_button_html = f'<a href="{google_form_url}" class="cancel-btn">取消預約</a>'
 
     try:
+        # 產生富文本郵件內容（包含所有信息）
         html = build_email_html(
             recipient_name=name,
             recipient_role=role,
@@ -240,11 +250,26 @@ def send_to_applicant(
             applicant_phone=applicant_phone,
             cancel_section=cancel_button_html,
         )
-        send_simple_email(gmail, sender, email, subject, html)
-        print(f"  ✅ 應聘者 {name}（{role}）→ {email} [含取消按鈕/表單]")
+        
+        # 產生 iCal 邀請（包含所有與會者）
+        ical = build_ical_event(
+            organizer_email=sender,
+            subject=subject,
+            start_dt=start_dt,
+            end_dt=end_dt,
+            description=description,
+            meet_link=meet_link,
+            attendees=all_attendees,
+        )
+        
+        # 發送 Calendar 邀請，讓應聘者可以加入日曆、接受/拒絕
+        send_calendar_invite(gmail, sender, email, subject, html, ical)
+        print(f"  ✅ 應聘者 {name}（{role}）→ {email} [含 Calendar 邀請、取消按鈕]")
         return {"success": [email], "failed": []}
     except Exception as e:
-        print(f"應聘者 {name}（{role}）→ 失敗：{e}")
+        print(f"  ❌ 應聘者 {name}（{role}）→ 失敗：{e}")
+        import traceback
+        traceback.print_exc()
         return {"success": [], "failed": [{"email": email, "error": str(e)}]}
 
 
@@ -262,12 +287,12 @@ def send_to_attendees(
     applicant_phone: str = "",
     delay_seconds: float = 1.0,
 ) -> dict:
-    """寄送日歷邀請給內部參與者（僅發送日歷通知，不發送 HTML 邀約說明）"""
+    """寄送 Google Calendar 邀請給內部參與者（含優化的 HTML 郵件說明）"""
     total = len(attendees)
     success = []
     failed = []
 
-    print(f"\n寄送日歷邀請給 {total} 位內部參與者")
+    print(f"\n寄送 Google Calendar 邀請給 {total} 位內部參與者")
     print("─" * 50)
 
     for i, person in enumerate(attendees, start=1):
@@ -276,7 +301,24 @@ def send_to_attendees(
         role = person.get("role", "與會者")
 
         try:
-            # 只生成日歷邀請，不生成 HTML 邀約說明
+            # 為內部參與者產生優化的 HTML 郵件內容（不含應聘者取消按鈕）
+            html = build_email_html(
+                recipient_name=name,
+                recipient_role=role,
+                subject=subject,
+                start_dt=start_dt,
+                end_dt=end_dt,
+                meet_link=meet_link,
+                description=description,
+                organizer_email=sender,
+                all_attendees=attendees,
+                job_title=job_title,
+                applicant_email=applicant_email,
+                applicant_phone=applicant_phone,
+                cancel_section="",  # 內部參與者不需要取消按鈕
+            )
+            
+            # 產生 iCal 邀請（包含所有與會者）
             ical = build_ical_event(
                 organizer_email=sender,
                 subject=subject,
@@ -287,23 +329,16 @@ def send_to_attendees(
                 attendees=attendees,
             )
             
-            # 使用最小化 HTML 內容搭配 iCal
-            minimal_html = f"""
-<html>
-<body style="font-family: Arial, sans-serif;">
-  <p><strong>會議標題：</strong> {subject}</p>
-  <p><strong>時間：</strong> {start_dt.strftime("%Y年%m月%d日 %H:%M")} - {end_dt.strftime("%H:%M")}</p>
-  <p><strong>Google Meet：</strong> {meet_link}</p>
-</body>
-</html>
-"""
-            send_calendar_invite(gmail, sender, email, subject, minimal_html, ical)
+            # 發送 Calendar 邀請，讓內部人員可以加入日曆、接受/拒絕
+            send_calendar_invite(gmail, sender, email, subject, html, ical)
             success.append(email)
-            print(f"  [{i:02d}/{total}] ✅ {name}（{role}）→ {email}")
+            print(f"  [{i:02d}/{total}] ✅ {name}（{role}）→ {email} [Calendar 邀請]")
 
         except Exception as e:
             failed.append({"email": email, "error": str(e)})
-            print(f"  [{i:02d}/{total}] {name}（{role}）→ 失敗：{e}")
+            print(f"  [{i:02d}/{total}] ❌ {name}（{role}）→ 失敗：{e}")
+            import traceback
+            traceback.print_exc()
 
         if i < total:
             time.sleep(delay_seconds)

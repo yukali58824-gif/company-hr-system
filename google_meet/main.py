@@ -1,5 +1,6 @@
 import argparse
 import os
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -25,18 +26,40 @@ def get_services(login_email: str = None):
     """取得 Google Calendar 與 Gmail 授權服務"""
     creds = None
     if os.path.exists(TOKEN_FILE):
-        creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+        try:
+            creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+        except Exception as e:
+            print(f"[ERROR] 讀取 token.json 失敗: {e}")
+            creds = None
+    
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+            try:
+                print("[INFO] Token 已過期，嘗試自動刷新...")
+                creds.refresh(Request())
+                with open(TOKEN_FILE, "w") as f:
+                    f.write(creds.to_json())
+                print("[INFO] Token 已成功刷新")
+            except Exception as e:
+                print(f"[ERROR] Token 刷新失敗: {e}")
+                creds = None
         else:
-            flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
-            creds = flow.run_local_server(port=8080, login_hint=login_email)
-        with open(TOKEN_FILE, "w") as f:
-            f.write(creds.to_json())
-    calendar = build("calendar", "v3", credentials=creds)
-    gmail    = build("gmail",    "v1", credentials=creds)
-    return calendar, gmail
+            print("[ERROR] Google API 認證失敗：token.json 不存在或無效")
+            print("[INFO] 請先執行以下命令進行認證:")
+            print(f"[INFO]   cd {BASE_DIR}")
+            print("[INFO]   python authenticate.py")
+            raise RuntimeError(
+                f"Google API 認證未完成。\n"
+                f"請執行 {BASE_DIR}/authenticate.py 進行首次認證。"
+            )
+    
+    try:
+        calendar = build("calendar", "v3", credentials=creds)
+        gmail    = build("gmail",    "v1", credentials=creds)
+        return calendar, gmail
+    except Exception as e:
+        print(f"[ERROR] 建立 Google 服務失敗: {e}")
+        raise
 
 
 def schedule_meeting(
@@ -117,6 +140,7 @@ if __name__ == "__main__":
     parser.add_argument("--start_dt", required=True)
     parser.add_argument("--end_dt", required=True)
     parser.add_argument("--description", default="若有任何問題歡迎<br><b>在104留下訊息</b>，<br>或直接來電 <b>0906-205-353</b>，<br>我們會儘速與您聯繫。")
+    parser.add_argument("--interviewers", default="[]", help="JSON 格式的面試官列表")
     args = parser.parse_args()
 
     tz = timezone(timedelta(hours=8))
@@ -130,19 +154,27 @@ if __name__ == "__main__":
         "job_title": args.job_title,
     }
 
-    attendees = [{"name": "Alice 陳", "email": "yukali58820@gmail.com"}]
+    # 嘗試從命令行參數解析面試官列表，若失敗則使用預設值
+    try:
+        attendees = json.loads(args.interviewers)
+        if not attendees or not isinstance(attendees, list):
+            raise ValueError("Invalid interviewers format")
+    except (ValueError, json.JSONDecodeError):
+        # 回退到預設的硬編碼面試官（若 --interviewers 未提供或格式錯誤）
+        attendees = [{"name": "Alice 陳", "email": "yukali58820@gmail.com", "role": "面試官"}]
 
-    if "業務" in args.job_title:
-        rules = {
-            ("高雄屏東區",  "市場開發組"): [
-                {"name": "小佩", "email": "yukali58821@gmaol.com"}
-            ],
-            ("台南區",  "市場開發組"): [],
-        }
+        # 根據職位名稱添加額外的面試官
+        if "業務" in args.job_title:
+            rules = {
+                ("高雄屏東區", "市場開發組"): [
+                    {"name": "小佩", "email": "yukali58821@gmail.com", "role": "面試官"}
+                ],
+                ("台南區", "市場開發組"): [],
+            }
 
-        for keywords, members in rules.items():
-            if all(word in args.job_title for word in keywords):
-                attendees.extend(members)
+            for keywords, members in rules.items():
+                if all(word in args.job_title for word in keywords):
+                    attendees.extend(members)
 
     event = schedule_meeting(
         login_email=args.login_email,

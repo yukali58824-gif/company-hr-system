@@ -10,7 +10,7 @@ from datetime import datetime, time, date, timedelta
 import asyncio
 from datetime import timezone
 
-from fastapi import FastAPI, Request, Depends, Form, HTTPException, status, Cookie, Query
+from fastapi import FastAPI, Request, Depends, Form, HTTPException, status, Cookie, Query, BackgroundTasks
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -115,6 +115,12 @@ def is_keyword_restricted_position(title: str) -> bool:
     title_lower = title.lower()
     return any(keyword in title_lower for keyword in KEYWORD_RESTRICTED_POSITIONS)
 
+def render_html_template(template: str, variables: dict) -> str:
+    for key, value in variables.items():
+        template = template.replace(f"{{{{{key}}}}}", str(value))
+    return template
+
+
 def build_confirmation_email(
         applicant_name: str,
         position_title: str,
@@ -123,40 +129,116 @@ def build_confirmation_email(
         end_time,
         cancel_token: str,
         subject_prefix: str = "面試預約確認",
+        meet_link: str = "",
+        applicant_email: str = "",
+        applicant_phone: str = "",
 ) -> tuple[str, str]:
         """組裝確認信 subject 與 HTML body，回傳 (subject, html)。"""
-        cancel_url = "https://forms.gle/iuzrhmWH7XrzZSbX6"
+        cancel_url = CANCEL_FORM_URL or "https://forms.gle/iuzrhmWH7XrzZSbX6"
         date_str = slot_date.strftime("%Y-%m-%d") if slot_date else ""
         start_str = start_time.strftime("%H:%M") if start_time else ""
         end_str = end_time.strftime("%H:%M") if end_time else ""
 
-        subject = f"【{subject_prefix}】{applicant_name} — {date_str} {start_str}"
-        html = f"""
-        <div style="font-family:sans-serif;max-width:560px;margin:auto;color:#333;">
-            <h2 style="color:#2563eb;">{subject_prefix}</h2>
-            <p><b>{applicant_name}</b>，</p>
-            <p>您的面試預約已成功確認，詳細資訊如下：</p>
-            <table style="border-collapse:collapse;width:100%;margin:16px 0;">
-                <tr><td style="padding:8px;border:1px solid #e5e7eb;background:#f9fafb;width:30%;">應徵職缺</td>
-                        <td style="padding:8px;border:1px solid #e5e7eb;">{position_title}</td></tr>
-                <tr><td style="padding:8px;border:1px solid #e5e7eb;background:#f9fafb;">面試日期</td>
-                        <td style="padding:8px;border:1px solid #e5e7eb;">{date_str}</td></tr>
-                <tr><td style="padding:8px;border:1px solid #e5e7eb;background:#f9fafb;">面試時間</td>
-                        <td style="padding:8px;border:1px solid #e5e7eb;">{start_str} – {end_str}</td></tr>
-            </table>
-            <p style="margin-top:24px;">如需取消預約，請點擊下方按鈕：</p>
-            <p>
-                <a href="https://forms.gle/iuzrhmWH7XrzZSbX6"
-                     style="display:inline-block;padding:10px 24px;background:#ef4444;
-                                    color:#fff;border-radius:6px;text-decoration:none;font-weight:bold;">
-                    取消預約
-                </a>
-            </p>
-            <p style="color:#6b7280;font-size:13px;margin-top:32px;">
-                若您有任何問題，歡迎在 104 留下訊息，或來電 0906-205-353。
-            </p>
-        </div>
-        """
+        if subject_prefix == "面試預約確認":
+            subject = f"鼎霖視訊面試- {applicant_name}_{position_title}"
+        else:
+            subject = f"【{subject_prefix}】{applicant_name} — {date_str} {start_str}"
+
+        try:
+            template_path = BASE_DIR / "google_meet" / "templates" / "invite_email.html"
+            template = template_path.read_text(encoding="utf-8")
+
+            tz_offset = timezone(timedelta(hours=8))
+            if slot_date and start_time:
+                start_dt = datetime.combine(slot_date, start_time).replace(tzinfo=tz_offset)
+            else:
+                start_dt = datetime.now(tz_offset)
+            if slot_date and end_time:
+                end_dt = datetime.combine(slot_date, end_time).replace(tzinfo=tz_offset)
+            else:
+                end_dt = start_dt + timedelta(minutes=30)
+
+            description_text = "若您有任何問題，歡迎在 104 留下訊息，或來電 0906-205-353。"
+            cancel_button_html = f'<a href="{cancel_url}" class="cancel-btn">取消預約</a>'
+            job_title_block = f"""
+        <div class=\"info-row\">\n          <div class=\"label\">應徵職缺</div>\n          <div class=\"content-text\">{position_title}</div>\n        </div>""" if position_title else ""
+            description_block = f"""
+        <div class=\"info-row\">\n          <div class=\"label\">說明</div>\n          <div class=\"content-text\">{description_text}</div>\n        </div>"""
+
+            # 應徵者聯絡資訊區塊
+            applicant_info_block = ""
+            if applicant_email or applicant_phone:
+                info_items = []
+                if applicant_email:
+                    info_items.append(applicant_email)
+                if applicant_phone:
+                    info_items.append(applicant_phone)
+                applicant_info_block = f"""
+        <div class=\"info-row\">\n          <div class=\"label\">應徵者</div>\n          <div class=\"content-text\">{" · ".join(info_items)}</div>\n        </div>"""
+
+            # 有 meet_link 才顯示加入會議按鈕；否則顯示提示文字
+            if meet_link:
+                meet_button_html = f'<a href="{meet_link}" class="btn">加入會議</a>'
+            else:
+                meet_button_html = '<p style="color:#64748b;font-size:13px;margin-top:8px;">Google Meet 會議連結將於面試前另行寄送，請留意信箱。</p>'
+
+            variables = {
+                "recipient_name": applicant_name,
+                "recipient_role": "應聘者",
+                "subject": subject,
+                "start_str": start_dt.strftime("%Y年%m月%d日 %H:%M"),
+                "end_str": end_dt.strftime("%H:%M"),
+                "duration": int((end_dt - start_dt).seconds / 60),
+                "meet_link": meet_link or "",
+                "meet_button": meet_button_html,
+                "description_block": description_block,
+                "organizer_email": os.environ.get("GOOGLE_MEET_SENDER_EMAIL", "yukali58822@gmail.com"),
+                "attendee_rows": "",
+                "attendee_section": "",
+                "job_title_block": job_title_block,
+                "applicant_info_block": applicant_info_block,
+                "cancel_section": cancel_button_html,
+            }
+            html = render_html_template(template, variables)
+        except Exception:
+            logger.exception("build_confirmation_email failed, falling back to plain HTML", exc_info=True)
+            meeting_action = ""
+            if meet_link:
+                meeting_action = f"""
+                <p>
+                    <a href=\"{meet_link}\"
+                         style=\"display:inline-block;padding:10px 24px;background:#2563eb;color:#fff;border-radius:6px;text-decoration:none;font-weight:bold;\">
+                        加入會議
+                    </a>
+                </p>
+                """
+            html = f"""
+            <div style=\"font-family:sans-serif;max-width:560px;margin:auto;color:#333;\">
+                <h2 style=\"color:#2563eb;\">{subject_prefix}</h2>
+                <p><b>{applicant_name}</b>，</p>
+                <p>您的面試預約已成功確認，詳細資訊如下：</p>
+                <table style=\"border-collapse:collapse;width:100%;margin:16px 0;\">
+                    <tr><td style=\"padding:8px;border:1px solid #e5e7eb;background:#f9fafb;width:30%;\">應徵職缺</td>
+                            <td style=\"padding:8px;border:1px solid #e5e7eb;\">{position_title}</td></tr>
+                    <tr><td style=\"padding:8px;border:1px solid #e5e7eb;background:#f9fafb;\">面試日期</td>
+                            <td style=\"padding:8px;border:1px solid #e5e7eb;\">{date_str}</td></tr>
+                    <tr><td style=\"padding:8px;border:1px solid #e5e7eb;background:#f9fafb;\">面試時間</td>
+                            <td style=\"padding:8px;border:1px solid #e5e7eb;\">{start_str} – {end_str}</td></tr>
+                </table>
+                {meeting_action}
+                <p style=\"margin-top:24px;\">如需取消預約，請點擊下方按鈕：</p>
+                <p>
+                    <a href=\"{cancel_url}\"
+                         style=\"display:inline-block;padding:10px 24px;background:#ef4444;\n                                        color:#fff;border-radius:6px;text-decoration:none;font-weight:bold;\">
+                        取消預約
+                    </a>
+                </p>
+                <p style=\"color:#6b7280;font-size:13px;margin-top:32px;\">
+                    若您有任何問題，歡迎在 104 留下訊息，或來電 0906-205-353。
+                </p>
+            </div>
+            """
+
         return subject, html
 
 async def delete_old_google_event(event_id: str, sender_email: str = None):
@@ -312,7 +394,38 @@ async def log_slot_count_change(conn, slot_id, old_count, new_count, reason):
         )
 
 
-async def schedule_google_meet_for_booking(booking_id: str, delay_seconds: int = 30):
+async def get_interviewers_for_position(pool, position_id: str) -> list[dict]:
+    """
+    從數據庫取得該職位的面試官列表
+    
+    Returns:
+        List of dicts with keys: name, email, role
+    """
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT i.name, i.email, i.role
+                FROM interviewers i
+                JOIN position_interviewers pi ON pi.interviewer_id = i.id
+                WHERE pi.position_id=$1 AND i.is_active=TRUE
+                ORDER BY i.name
+                """,
+                uuid.UUID(position_id)
+            )
+            return [dict(r) for r in rows]
+    except Exception as e:
+        log_json(
+            logging.WARNING,
+            "get_interviewers_failed",
+            position_id=position_id,
+            error=str(e),
+        )
+        # 若無法從數據庫取得，返回預設的面試官
+        return [{"name": "Alice 陳", "email": "yukali58820@gmail.com", "role": "面試官"}]
+
+
+async def schedule_google_meet_for_booking(booking_id: str, delay_seconds: int =0):
     try:
         await asyncio.sleep(delay_seconds)
         pool = await get_pool()
@@ -320,7 +433,7 @@ async def schedule_google_meet_for_booking(booking_id: str, delay_seconds: int =
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT b.id, b.slot_id, a.id AS applicant_id, a.name AS applicant_name, a.email AS applicant_email,
+                SELECT b.id, b.slot_id, b.position_id, a.id AS applicant_id, a.name AS applicant_name, a.email AS applicant_email,
                        a.phone AS applicant_phone,
                        p.title AS job_title, s.slot_date, s.start_time, s.end_time
                 FROM bookings b
@@ -339,6 +452,18 @@ async def schedule_google_meet_for_booking(booking_id: str, delay_seconds: int =
         tz = timezone(timedelta(hours=8))
         start_dt = datetime.combine(row["slot_date"], row["start_time"]).replace(tzinfo=tz)
         end_dt = datetime.combine(row["slot_date"], row["end_time"]).replace(tzinfo=tz)
+
+        # 獲取該職位的面試官列表
+        interviewers = await get_interviewers_for_position(pool, str(row["position_id"]))
+        
+        log_json(
+            logging.INFO,
+            "schedule_google_meet.interviewers_fetched",
+            booking_id=booking_id,
+            position_id=str(row["position_id"]),
+            interviewer_count=len(interviewers),
+            interviewers=[{"name": i.get("name"), "email": i.get("email")} for i in interviewers],
+        )
 
         script_path = str(BASE_DIR / "google_meet" / "main.py")
         sender_email = os.environ.get("GOOGLE_MEET_SENDER_EMAIL", "yukali58822@gmail.com")
@@ -359,6 +484,8 @@ async def schedule_google_meet_for_booking(booking_id: str, delay_seconds: int =
             start_dt.isoformat(),
             "--end_dt",
             end_dt.isoformat(),
+            "--interviewers",
+            json.dumps([{"name": i.get("name"), "email": i.get("email"), "role": i.get("role")} for i in interviewers]),
         ]
 
         result = await asyncio.to_thread(
@@ -437,6 +564,64 @@ async def schedule_google_meet_for_booking(booking_id: str, delay_seconds: int =
                 stdout_preview=out[:2000],
                 stderr_preview=err[:2000],
             )
+
+        # 無論 Google Meet 是否成功建立，都寄出確認信
+        # 有 meet_link：顯示加入會議按鈕；無 meet_link：顯示「連結將另行寄送」提示
+        if not meet_link:
+            log_json(
+                logging.ERROR,
+                "google_meet.no_meet_link_send_fallback_email",
+                booking_id=booking_id,
+            )
+        try:
+            cancel_token, cancel_expires = generate_cancel_token()
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO email_logs (booking_id, recipient_email, email_type, status, cancel_token, cancel_token_expires_at) VALUES ($1, $2, $3, $4, $5, $6)",
+                    uuid.UUID(booking_id),
+                    row["applicant_email"],
+                    'booking_confirm',
+                    'pending',
+                    cancel_token,
+                    cancel_expires,
+                )
+
+            subject, html = build_confirmation_email(
+                applicant_name=row["applicant_name"],
+                position_title=row["job_title"],
+                slot_date=row["slot_date"],
+                start_time=row["start_time"],
+                end_time=row["end_time"],
+                cancel_token=cancel_token,
+                meet_link=meet_link or "",
+                applicant_email=row["applicant_email"],
+                applicant_phone=row.get("applicant_phone") or "",
+            )
+            await _send(to=row["applicant_email"], subject=subject, html=html)
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE email_logs SET status='sent', sent_at=NOW(), updated_at=NOW() WHERE booking_id=$1 AND email_type='booking_confirm' AND cancel_token=$2",
+                    uuid.UUID(booking_id),
+                    cancel_token,
+                )
+            
+            # 記錄向面試官發送的 Google Calendar 邀請
+            if interviewers:
+                async with pool.acquire() as conn:
+                    for interviewer in interviewers:
+                        try:
+                            await conn.execute(
+                                "INSERT INTO email_logs (booking_id, recipient_email, email_type, status) VALUES ($1, $2, $3, $4)",
+                                uuid.UUID(booking_id),
+                                interviewer["email"],
+                                'hr_notify',
+                                'sent',  # Google Calendar API 已自動發送
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to log email for interviewer {interviewer['email']}: {e}")
+        except Exception:
+            logger.exception(f"Failed to send booking confirmation email for booking {booking_id}")
+
 
         if err:
             log_json(
@@ -1038,7 +1223,9 @@ async def update_slot(
                     """
                     SELECT b.id AS booking_id,
                            b.google_event_id,
+                           b.google_meet_link,
                            a.email AS applicant_email,
+                           a.phone AS applicant_phone,
                            a.name AS applicant_name,
                            p.title AS position_title,
                            s.slot_date, s.start_time, s.end_time
@@ -1103,6 +1290,9 @@ async def update_slot(
                             end_time=bk["end_time"],
                             cancel_token=cancel_token,
                             subject_prefix="面試時間異動確認",
+                            meet_link=bk.get("google_meet_link") or "",
+                            applicant_email=bk.get("applicant_email") or "",
+                            applicant_phone=bk.get("applicant_phone") or "",
                         )
                         await _send(to=recipient_email, subject=subject, html=html)
                         await conn.execute(
@@ -1395,6 +1585,133 @@ async def toggle_position_visibility(
         logger.error(f"Toggle position visibility error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="更新職缺顯示狀態失敗")
 
+# ─────────────────────────────────────────────
+# INTERVIEWERS API - 面試官管理
+# ─────────────────────────────────────────────
+
+@app.get("/api/interviewers")
+async def get_interviewers(current=Depends(get_current_hr)):
+    """取得所有面試官列表"""
+    try:
+        pool = await get_pool()
+        
+        rows = await pool.fetch(
+            """
+            SELECT i.id, i.name, i.email, i.role, i.is_active, 
+                   COUNT(pi.id) as position_count
+            FROM interviewers i
+            LEFT JOIN position_interviewers pi ON pi.interviewer_id = i.id
+            GROUP BY i.id
+            ORDER BY i.name
+            """
+        )
+        
+        return [dict(r) for r in rows]
+    
+    except Exception as e:
+        logger.error(f"Get interviewers error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="取得面試官列表失敗")
+
+
+@app.get("/api/positions/{position_id}/interviewers")
+async def get_position_interviewers(
+    position_id: str,
+    current=Depends(get_current_hr)
+):
+    """取得職位的面試官列表"""
+    try:
+        pool = await get_pool()
+        
+        rows = await pool.fetch(
+            """
+            SELECT i.id, i.name, i.email, i.role
+            FROM interviewers i
+            JOIN position_interviewers pi ON pi.interviewer_id = i.id
+            WHERE pi.position_id=$1 AND i.is_active=TRUE
+            ORDER BY i.name
+            """,
+            uuid.UUID(position_id)
+        )
+        
+        return [dict(r) for r in rows]
+    
+    except Exception as e:
+        logger.error(f"Get position interviewers error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="取得職位面試官列表失敗")
+
+
+@app.post("/api/positions/{position_id}/interviewers/{interviewer_id}")
+async def add_interviewer_to_position(
+    position_id: str,
+    interviewer_id: str,
+    current=Depends(get_current_hr)
+):
+    """將面試官新增到職位"""
+    try:
+        pool = await get_pool()
+        
+        # 確保職位存在
+        position_exists = await pool.fetchval(
+            "SELECT id FROM job_positions WHERE id=$1",
+            uuid.UUID(position_id)
+        )
+        if not position_exists:
+            raise HTTPException(status_code=404, detail="職位不存在")
+        
+        # 確保面試官存在
+        interviewer_exists = await pool.fetchval(
+            "SELECT id FROM interviewers WHERE id=$1",
+            uuid.UUID(interviewer_id)
+        )
+        if not interviewer_exists:
+            raise HTTPException(status_code=404, detail="面試官不存在")
+        
+        # 新增關聯
+        await pool.execute(
+            """
+            INSERT INTO position_interviewers (position_id, interviewer_id)
+            VALUES ($1, $2)
+            ON CONFLICT DO NOTHING
+            """,
+            uuid.UUID(position_id),
+            uuid.UUID(interviewer_id)
+        )
+        
+        return {"ok": True, "message": "面試官已新增到職位"}
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Add interviewer error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="新增面試官失敗")
+
+
+@app.delete("/api/positions/{position_id}/interviewers/{interviewer_id}")
+async def remove_interviewer_from_position(
+    position_id: str,
+    interviewer_id: str,
+    current=Depends(get_current_hr)
+):
+    """將面試官從職位移除"""
+    try:
+        pool = await get_pool()
+        
+        result = await pool.execute(
+            """
+            DELETE FROM position_interviewers
+            WHERE position_id=$1 AND interviewer_id=$2
+            """,
+            uuid.UUID(position_id),
+            uuid.UUID(interviewer_id)
+        )
+        
+        return {"ok": True, "message": "面試官已從職位移除"}
+    
+    except Exception as e:
+        logger.error(f"Remove interviewer error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="移除面試官失敗")
+
+
 @app.post("/api/book")
 async def create_booking(payload: BookingCreate):
     try:
@@ -1598,72 +1915,13 @@ async def create_booking(payload: BookingCreate):
 
                 await log_slot_count_change(conn, slot_uuid, slot["booked_count"], new_booked_count, "new confirmed booking")
 
-                # 生成取消 token 並保存到 email_logs
-                cancel_token, cancel_expires = generate_cancel_token()
-                await conn.execute(
-                    """
-                    INSERT INTO email_logs 
-                    (booking_id, recipient_email, email_type, status, cancel_token, cancel_token_expires_at)
-                    VALUES ($1, $2, $3, $4, $5, $6)
-                    """,
-                    booking_id,
-                    payload.email,
-                    'booking_confirm',
-                    'pending',
-                    cancel_token,
-                    cancel_expires
-                )
-
-        # 直接寄出預約確認信
+        # 先建立 Google Meet 會議並寫回 DB，確認信會在建立成功後由 schedule_google_meet_for_booking 發出。
         try:
-            subject, html = build_confirmation_email(
-                applicant_name=payload.name,
-                position_title=position["title"],
-                slot_date=slot["slot_date"],
-                start_time=slot["start_time"],
-                end_time=slot["end_time"],
-                cancel_token=cancel_token,
-            )
-            await _send(to=payload.email, subject=subject, html=html)
-            async with pool.acquire() as conn2:
-                await conn2.execute(
-                    """
-                    UPDATE email_logs
-                    SET status='sent',
-                        sent_at=NOW(),
-                        updated_at=NOW()
-                    WHERE booking_id=$1 AND email_type='booking_confirm' AND status='pending'
-                    """,
-                    booking_id,
-                )
+            await schedule_google_meet_for_booking(str(booking_id), delay_seconds=0)
         except Exception:
-            logger.exception(f"Failed to send confirmation email for booking {booking_id}")
+            logger.exception(f"Failed to create google meet for booking {booking_id}")
 
-        # 排程在 30 秒後自動建立 Google Meet（用 CLI），並由 google_meet 進程寄送邀請信
-        try:
-            asyncio.create_task(schedule_google_meet_for_booking(str(booking_id), 30))
-        except Exception:
-            logger.exception("Failed to schedule google meet task")
-
-        # 立刻回查一次，確認此刻 DB 尚未帶入的狀態，方便和 30 秒後的結果對照
-        try:
-            await inspect_google_meet_link_state(str(booking_id), "post-create immediate check")
-        except Exception:
-            logger.exception(f"Immediate meet link check failed for booking {booking_id}")
-
-        # 再排一個延遲查核，若 35 秒後仍為空，代表 schedule_google_meet_for_booking 沒有寫回
-        try:
-            asyncio.create_task(
-                delayed_inspect_google_meet_link_state(
-                    str(booking_id),
-                    35,
-                    "post-create delayed check (35s)",
-                )
-            )
-        except Exception:
-            logger.exception(f"Failed to schedule delayed meet link check for booking {booking_id}")
-
-        return {"ok": True, "booking_id": str(booking_id)}
+        return {"ok": True, "booking_id": str(booking_id), "message": "預約成功，稍後將收到包含會議連結的信件。"}
 
     except HTTPException:
         raise
@@ -1680,7 +1938,7 @@ async def create_booking(payload: BookingCreate):
         raise HTTPException(status_code=500, detail="預約失敗")
 
 @app.post("/api/bookings/modify")
-async def modify_booking(payload: BookingModify):
+async def modify_booking(payload: BookingModify, background_tasks: BackgroundTasks):
     try:
         pool = await get_pool()
 
@@ -1911,6 +2169,8 @@ async def modify_booking(payload: BookingModify):
                             end_time=slot["end_time"],
                             cancel_token=cancel_token,
                             subject_prefix=subject_prefix,
+                            applicant_email=payload.email,
+                            applicant_phone=payload.phone or "",
                         )
                         await _send(to=payload.email, subject=subject, html=html)
                         await conn.execute(
@@ -1930,8 +2190,10 @@ async def modify_booking(payload: BookingModify):
                     # 若時段變動，排程 Google Meet
                     if booking["slot_id"] != slot_uuid:
                         try:
-                            asyncio.create_task(
-                                schedule_google_meet_for_booking(str(booking_uuid), delay_seconds=10)
+                            background_tasks.add_task(
+                                schedule_google_meet_for_booking,
+                                str(booking_uuid),
+                                10,
                             )
                         except Exception:
                             logger.exception(f"Failed to reschedule google meet for booking {booking_uuid}")
@@ -2404,6 +2666,7 @@ async def export_bookings(
 async def update_booking(
     booking_id: str,
     payload: BookingUpdate,
+    background_tasks: BackgroundTasks,
     current=Depends(get_current_hr)
 ):
     try:
@@ -2605,8 +2868,10 @@ async def update_booking(
                         booking_id=str(booking_uuid),
                         reason="time_updated",
                     )
-                    asyncio.create_task(
-                        schedule_google_meet_for_booking(str(booking_uuid), delay_seconds=5)
+                    background_tasks.add_task(
+                        schedule_google_meet_for_booking,
+                        str(booking_uuid),
+                        5,
                     )
                 except Exception as e:
                     logger.exception(f"Failed to reschedule google meet for booking {booking_uuid}")

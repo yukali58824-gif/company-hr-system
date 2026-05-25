@@ -109,6 +109,12 @@
       margin-bottom: 18px;
       line-height: 1.5;
     }
+
+    .divider {
+      border: none;
+      border-top: 2px solid #e2e8f0;
+      margin: 25px 0;
+    }
     
     /* 鼎霖金高質感按鈕 */
     .btn {
@@ -196,7 +202,7 @@
     <p class="invite-text">
       請準時加入下方<br>Google Meet 會議室：
     </p>
-    <a href="{{meet_link}}" class="btn">加入會議</a>
+    {{meet_button}}
     {{cancel_section}}
   </div>
 
