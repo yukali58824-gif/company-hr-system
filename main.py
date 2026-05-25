@@ -1951,7 +1951,8 @@ async def modify_booking(payload: BookingModify, background_tasks: BackgroundTas
                 await complete_expired_confirmed_bookings(conn)
                 booking = await conn.fetchrow(
                     """
-                    SELECT b.id, b.slot_id, b.position_id, b.status, b.deleted_at, b.google_event_id, a.id AS applicant_id
+                    SELECT b.id, b.slot_id, b.position_id, b.status, b.deleted_at, b.google_event_id, 
+                           a.id AS applicant_id, a.name, a.email, a.phone
                     FROM bookings b
                     JOIN applicants a ON a.id = b.applicant_id
                     WHERE b.id=$1
@@ -1973,7 +1974,14 @@ async def modify_booking(payload: BookingModify, background_tasks: BackgroundTas
                     slot_uuid
                 )
 
-                if not slot or slot["status"] != "open":
+                if not slot:
+                    raise HTTPException(status_code=400, detail="所選時段不存在")
+                
+                # 檢查時段是否變動
+                slot_changed = booking["slot_id"] != slot_uuid
+                
+                # 如果時段沒有變動，時段可以是任何狀態；如果時段變動，則必須是 'open'
+                if slot_changed and slot["status"] != "open":
                     raise HTTPException(status_code=400, detail="所選時段不可預約")
 
                 position = await conn.fetchrow(
@@ -2130,8 +2138,10 @@ async def modify_booking(payload: BookingModify, background_tasks: BackgroundTas
                     booking_uuid
                 )
 
-                # 不論是否變更時段，都重新產生取消 token 並寄送更新確認信；
-                # 若時段變動則額外排程 Google Meet 重建
+                # 根據是否變更時段，進行不同的操作：
+                # 1. 時段變動：重新建立 Google Meet，發給所有參與者（應徵者、面試官、發起者）
+                # 2. 時段未變動：只發送確認信給應徵者，不通知其他參與者
+                
                 try:
                     cancel_token, cancel_expires = generate_cancel_token()
 
@@ -2160,7 +2170,28 @@ async def modify_booking(payload: BookingModify, background_tasks: BackgroundTas
                     )
 
                     try:
-                        subject_prefix = "面試時間異動確認" if booking["slot_id"] != slot_uuid else "預約資料更新確認"
+                        # 決定郵件主旨和內容
+                        if slot_changed:
+                            subject_prefix = "面試時間異動確認"
+                            log_json(
+                                logging.INFO,
+                                "booking.time_modified",
+                                booking_id=str(booking_uuid),
+                                old_slot_id=str(booking["slot_id"]),
+                                new_slot_id=str(slot_uuid),
+                                reason="時段變動，將重新建立 Google Meet"
+                            )
+                        else:
+                            subject_prefix = "預約資料更新確認"
+                            log_json(
+                                logging.INFO,
+                                "booking.info_modified",
+                                booking_id=str(booking_uuid),
+                                applicant_name=payload.name,
+                                applicant_email=payload.email,
+                                reason="只有應徵者資訊變動，無需通知其他參與者"
+                            )
+                        
                         subject, html = build_confirmation_email(
                             applicant_name=payload.name,
                             position_title=position["title"],
@@ -2187,9 +2218,22 @@ async def modify_booking(payload: BookingModify, background_tasks: BackgroundTas
                     except Exception:
                         logger.exception(f"Failed to send update email for booking {booking_uuid}")
 
-                    # 若時段變動，排程 Google Meet
-                    if booking["slot_id"] != slot_uuid:
+                    # 若時段變動，刪除舊的 Google Meet 事件並重新排程
+                    if slot_changed:
                         try:
+                            # 刪除舊的 Google Calendar 事件
+                            if booking.get("google_event_id"):
+                                await delete_old_google_event(booking["google_event_id"])
+                            
+                            log_json(
+                                logging.INFO,
+                                "schedule_google_meet.triggered_on_modify",
+                                booking_id=str(booking_uuid),
+                                reason="面試時間異動，重新建立 Google Meet",
+                                old_slot_id=str(booking["slot_id"]),
+                                new_slot_id=str(slot_uuid)
+                            )
+                            
                             background_tasks.add_task(
                                 schedule_google_meet_for_booking,
                                 str(booking_uuid),
@@ -2197,6 +2241,14 @@ async def modify_booking(payload: BookingModify, background_tasks: BackgroundTas
                             )
                         except Exception:
                             logger.exception(f"Failed to reschedule google meet for booking {booking_uuid}")
+                    else:
+                        # 時段未變動，無需通知其他參與者
+                        log_json(
+                            logging.INFO,
+                            "booking.modified_no_google_meet_needed",
+                            booking_id=str(booking_uuid),
+                            reason="只有應徵者資訊變動，無需重新建立 Google Meet"
+                        )
 
                 except Exception:
                     logger.exception(f"Failed to create email log for modified booking {booking_uuid}")
